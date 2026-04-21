@@ -1,0 +1,10 @@
+{
+  "name": "delta-theorem-prover-webui",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Minimal standalone web UI for embedded JCEF host",
+  "scripts": {
+    "clean": "node scripts/build.js --clean",
+    "build": "node scripts/build.js"
+  }
+}

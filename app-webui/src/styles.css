@@ -1,0 +1,116 @@
+:root {
+  color-scheme: light;
+  --bg-a: #f0f7ff;
+  --bg-b: #d6e8ff;
+  --panel: rgba(255, 255, 255, 0.82);
+  --text: #12263a;
+  --subtle: #3a607f;
+  --border: rgba(18, 38, 58, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  font-family: "Segoe UI", "Noto Sans", sans-serif;
+  color: var(--text);
+}
+
+body {
+  background: linear-gradient(160deg, var(--bg-a), var(--bg-b));
+}
+
+.page {
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 12px;
+}
+
+.split-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(360px, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.editor-wrap {
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 8px;
+}
+
+.editor-wrap label {
+  font-size: 12px;
+  color: var(--subtle);
+}
+
+#editorInput {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 12px;
+  resize: none;
+  outline: none;
+  font: 14px/1.45 "Consolas", "JetBrains Mono", monospace;
+}
+
+#editorInput:focus {
+  border-color: #4d86b8;
+  box-shadow: 0 0 0 2px rgba(77, 134, 184, 0.2);
+}
+
+.header {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.header p {
+  margin: 6px 0 0;
+  color: var(--subtle);
+  font-size: 13px;
+}
+
+.canvas-wrap {
+  min-height: 0;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background: var(--panel);
+}
+
+#vizCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+@media (max-width: 900px) {
+  .split-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(220px, 40%) 1fr;
+  }
+}
