@@ -67,16 +67,22 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel-strong);
-  color: var(--text);
+  color: #f1dbc1;
   padding: 12px;
   resize: none;
   outline: none;
   font: 14px/1.45 "Consolas", "JetBrains Mono", monospace;
+  caret-color: #ffb173;
 }
 
 #editorInput:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+#editorInput::selection {
+  background: rgba(122, 205, 139, 0.28);
+  color: #f7efe4;
 }
 
 .header {
