@@ -46,18 +46,19 @@
       const y = pad + index * (barHeight + gap);
       const width = Math.max(2, Math.floor((line.length / maxLength) * areaWidth));
 
-      const hue = (line.length * 17 + index * 13) % 360;
-      ctx.fillStyle = `hsl(${hue}, 68%, 55%)`;
+      const intensity = Math.min(1, line.length / Math.max(1, maxLength));
+      const lightness = Math.floor(38 + intensity * 24);
+      ctx.fillStyle = `hsl(27, 82%, ${lightness}%)`;
       ctx.fillRect(pad, y, width, barHeight);
 
-      ctx.fillStyle = '#12263a';
+      ctx.fillStyle = '#f2e9de';
       ctx.font = '13px "Segoe UI", sans-serif';
       const label = `${line.lineNumber}: ${line.preview} (${line.length})`;
       ctx.fillText(label, pad + 8, y + 15);
     });
 
     if (lines.length === 0) {
-      ctx.fillStyle = '#12263a';
+      ctx.fillStyle = '#d8cfc2';
       ctx.font = '16px "Segoe UI", sans-serif';
       ctx.fillText('Type text in the editor to see visualization.', 24, 40);
     }
