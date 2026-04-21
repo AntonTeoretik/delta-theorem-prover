@@ -9,7 +9,7 @@ import javax.swing.JFrame
 
 class MainWindow : JFrame("Delta Theorem Prover - MVP Skeleton") {
     private val pipeline = CorePipeline()
-    private var latestText: String = "A -> B\nB -> C\n\ntherefore A -> C"
+    private var latestText: String = "\\x . (\$c(y, x))"
     private val webViewPanel = WebViewPanel(
         initialText = latestText,
         onEditorTextChanged = { source ->

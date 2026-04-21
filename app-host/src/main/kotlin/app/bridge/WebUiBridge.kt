@@ -1,5 +1,8 @@
 package app.bridge
 
+import core.model.Diagnostic
+import core.model.TermEdge
+import core.model.TermNode
 import core.model.VisualizationData
 import org.cef.browser.CefBrowser
 
@@ -50,17 +53,54 @@ class WebUiBridge(private val browser: CefBrowser) {
     }
 
     private fun VisualizationData.toJson(): String {
-        val linesJson = lines.joinToString(separator = ",") { line ->
-            """{"lineNumber":${line.lineNumber},"length":${line.length},"preview":"${escapeJson(line.preview)}"}"""
-        }
+        val diagnosticsJson = diagnostics.joinToString(",") { it.toJson() }
+        val freeVarsJson = freeVariableNames.joinToString(",") { "\"${escapeJson(it)}\"" }
+        val nodesJson = nodes.joinToString(",") { it.toJson() }
+        val blueEdgesJson = blueEdges.joinToString(",") { it.toJson() }
+        val greenEdgesJson = greenEdges.joinToString(",") { it.toJson() }
 
         return """
             {
               "sourceText":"${escapeJson(sourceText)}",
-              "lineCount":$lineCount,
-              "nonEmptyLineCount":$nonEmptyLineCount,
-              "totalCharacters":$totalCharacters,
-              "lines":[${linesJson}]
+              "diagnostics":[$diagnosticsJson],
+              "freeVariableNames":[$freeVarsJson],
+              "nodes":[$nodesJson],
+              "blueEdges":[$blueEdgesJson],
+              "greenEdges":[$greenEdgesJson]
+            }
+        """.trimIndent()
+    }
+
+    private fun Diagnostic.toJson(): String {
+        return """{"message":"${escapeJson(message)}","line":$line,"column":$column}"""
+    }
+
+    private fun TermNode.toJson(): String {
+        return """
+            {
+              "id":"${escapeJson(id)}",
+              "type":"${type.name}",
+              "label":"${escapeJson(label)}",
+              "x":$x,
+              "y":$y,
+              "width":$width,
+              "height":$height,
+              "blueInputCount":$blueInputCount,
+              "blueOutputCount":$blueOutputCount,
+              "greenInputCount":$greenInputCount,
+              "greenOutputCount":$greenOutputCount
+            }
+        """.trimIndent()
+    }
+
+    private fun TermEdge.toJson(): String {
+        return """
+            {
+              "id":"${escapeJson(id)}",
+              "fromNodeId":"${escapeJson(fromNodeId)}",
+              "toNodeId":"${escapeJson(toNodeId)}",
+              "fromPort":$fromPort,
+              "toPort":$toPort
             }
         """.trimIndent()
     }

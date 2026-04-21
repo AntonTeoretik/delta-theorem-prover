@@ -93,6 +93,27 @@ Windows:
 scripts\run-all.bat
 ```
 
+## Term syntax (current MVP)
+
+Left editor accepts a single term:
+
+- variable: `x`
+- constant: `$c`
+- lambda: `\x . t`
+- application: `t(a)`
+- multi-arg application: `t(a, b, c)` (parsed as `(((t(a))(b))(c))`)
+
+Example:
+
+```text
+\x . ($c(y, x))
+```
+
+Visualization shows node graph with:
+
+- blue edges for term tree structure
+- green edges for binder links (`lambda` bindings and free vars from `ROOT`)
+
 ## How to extend toward theorem prover
 
 1. Add AST nodes under `app-core/src/main/kotlin/core/model`.

@@ -2,6 +2,6 @@ package core.model
 
 data class ParsedDocument(
     val sourceText: String,
-    val lines: List<String>,
+    val term: Term?,
     val diagnostics: List<Diagnostic> = emptyList(),
 )
