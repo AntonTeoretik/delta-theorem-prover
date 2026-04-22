@@ -136,6 +136,41 @@ body {
   border: 1px solid var(--border);
   overflow: hidden;
   background: linear-gradient(180deg, #2e333c, #272c34);
+  position: relative;
+}
+
+.definition-bar {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 2px 6px;
+  z-index: 2;
+}
+
+.definition-pill {
+  border: 1px solid rgba(255, 177, 115, 0.35);
+  background: rgba(40, 44, 52, 0.9);
+  color: #e8d6c2;
+  border-radius: 8px;
+  font: 12px "Consolas", "JetBrains Mono", monospace;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.definition-pill.active {
+  border-color: #ffb173;
+  background: rgba(86, 60, 38, 0.92);
+  color: #ffe2c5;
+}
+
+.definition-pill:hover {
+  border-color: #ffb173;
 }
 
 #vizCanvas {

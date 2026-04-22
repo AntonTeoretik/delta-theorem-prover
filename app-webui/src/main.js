@@ -4,6 +4,7 @@
   const ctx = canvas.getContext('2d');
   const stats = document.getElementById('stats');
   const compactToggle = document.getElementById('compactToggle');
+  const definitionBar = document.getElementById('definitionBar');
   const view = {
     scale: 1,
     offsetX: 0,
@@ -19,6 +20,8 @@
   let lastPayload = {
     sourceText: '',
     diagnostics: [],
+    definitionNames: [],
+    selectedDefinitionName: null,
     freeVariableNames: [],
     nodes: [],
     blueEdges: [],
@@ -36,6 +39,39 @@
       onSuccess: () => {},
       onFailure: () => {}
     });
+  }
+
+  function notifyHostDefinitionSelected(name) {
+    if (typeof window.cefQuery !== 'function') {
+      return;
+    }
+
+    window.cefQuery({
+      request: `selectDefinition:${name}`,
+      onSuccess: () => {},
+      onFailure: () => {}
+    });
+  }
+
+  function renderDefinitionBar(payload) {
+    const names = payload.definitionNames || [];
+    const selected = payload.selectedDefinitionName;
+    definitionBar.innerHTML = '';
+
+    names.forEach((name) => {
+      const button = document.createElement('button');
+      button.className = 'definition-pill';
+      if (name === selected) {
+        button.classList.add('active');
+      }
+      button.textContent = name;
+      button.addEventListener('click', () => {
+        notifyHostDefinitionSelected(name);
+      });
+      definitionBar.appendChild(button);
+    });
+
+    definitionBar.style.display = names.length > 0 ? 'flex' : 'none';
   }
 
   function resizeCanvasToDisplaySize() {
@@ -464,6 +500,7 @@
 
   function renderCurrent(resetView) {
     renderedPayload = compactify(lastPayload);
+    renderDefinitionBar(renderedPayload);
     if (resetView) {
       fitToContent(renderedPayload);
     }
@@ -652,7 +689,8 @@
       });
     }
 
-    stats.textContent = `Nodes: ${(payload.nodes || []).length} | Blue edges: ${(payload.blueEdges || []).length} | Green edges: ${(payload.greenEdges || []).length} | Free vars: ${(payload.freeVariableNames || []).length}`;
+    const selected = payload.selectedDefinitionName || '-';
+    stats.textContent = `Selected: ${selected} | Nodes: ${(payload.nodes || []).length} | Blue edges: ${(payload.blueEdges || []).length} | Green edges: ${(payload.greenEdges || []).length} | Free vars: ${(payload.freeVariableNames || []).length}`;
   }
 
   window.renderFromHost = (payload) => {

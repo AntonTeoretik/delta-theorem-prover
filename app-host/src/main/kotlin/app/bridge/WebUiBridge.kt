@@ -54,6 +54,8 @@ class WebUiBridge(private val browser: CefBrowser) {
 
     private fun VisualizationData.toJson(): String {
         val diagnosticsJson = diagnostics.joinToString(",") { it.toJson() }
+        val definitionsJson = definitionNames.joinToString(",") { "\"${escapeJson(it)}\"" }
+        val selectedDefinitionJson = selectedDefinitionName?.let { "\"${escapeJson(it)}\"" } ?: "null"
         val freeVarsJson = freeVariableNames.joinToString(",") { "\"${escapeJson(it)}\"" }
         val nodesJson = nodes.joinToString(",") { it.toJson() }
         val blueEdgesJson = blueEdges.joinToString(",") { it.toJson() }
@@ -63,6 +65,8 @@ class WebUiBridge(private val browser: CefBrowser) {
             {
               "sourceText":"${escapeJson(sourceText)}",
               "diagnostics":[$diagnosticsJson],
+              "definitionNames":[$definitionsJson],
+              "selectedDefinitionName":$selectedDefinitionJson,
               "freeVariableNames":[$freeVarsJson],
               "nodes":[$nodesJson],
               "blueEdges":[$blueEdgesJson],

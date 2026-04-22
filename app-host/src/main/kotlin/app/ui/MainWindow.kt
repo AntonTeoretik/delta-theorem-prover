@@ -9,11 +9,16 @@ import javax.swing.JFrame
 
 class MainWindow : JFrame("Delta Theorem Prover - MVP Skeleton") {
     private val pipeline = CorePipeline()
-    private var latestText: String = "\\x . (\$c(y, x))"
+    private var latestText: String = "\$id := \\x . x;\n\$constApp := \\x . (\$c(y, x));"
+    private var selectedDefinitionName: String? = null
     private val webViewPanel = WebViewPanel(
         initialText = latestText,
         onEditorTextChanged = { source ->
             latestText = source
+            publishCurrentVisualization()
+        },
+        onDefinitionSelected = { definitionName ->
+            selectedDefinitionName = definitionName.ifBlank { null }
             publishCurrentVisualization()
         },
     )
@@ -38,7 +43,8 @@ class MainWindow : JFrame("Delta Theorem Prover - MVP Skeleton") {
     }
 
     private fun publishCurrentVisualization() {
-        val data = pipeline.buildVisualization(latestText)
+        val data = pipeline.buildVisualization(latestText, selectedDefinitionName)
+        selectedDefinitionName = data.selectedDefinitionName
         webViewPanel.bridge.publish(data)
     }
 }

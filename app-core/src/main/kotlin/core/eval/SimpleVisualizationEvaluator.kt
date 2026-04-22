@@ -8,11 +8,15 @@ import core.model.TermNodeType
 import core.model.VisualizationData
 
 class SimpleVisualizationEvaluator : VisualizationEvaluator {
-    override fun evaluate(document: ParsedDocument): VisualizationData {
-        val term = document.term
+    override fun evaluate(document: ParsedDocument, selectedDefinitionName: String?): VisualizationData {
+        val definitionNames = document.definitions.map { it.name }
+        val selected = document.definitions.firstOrNull { it.name == selectedDefinitionName }
+            ?: document.definitions.firstOrNull()
             ?: return VisualizationData(
                 sourceText = document.sourceText,
                 diagnostics = document.diagnostics,
+                definitionNames = definitionNames,
+                selectedDefinitionName = null,
                 freeVariableNames = emptyList(),
                 nodes = emptyList(),
                 blueEdges = emptyList(),
@@ -20,11 +24,13 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             )
 
         val builder = TermGraphBuilder()
-        val graph = builder.build(term)
+        val graph = builder.build(selected.term)
 
         return VisualizationData(
             sourceText = document.sourceText,
             diagnostics = document.diagnostics,
+            definitionNames = definitionNames,
+            selectedDefinitionName = selected.name,
             freeVariableNames = graph.freeVariableNames,
             nodes = graph.nodes,
             blueEdges = graph.blueEdges,

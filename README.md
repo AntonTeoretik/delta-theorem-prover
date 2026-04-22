@@ -103,6 +103,15 @@ Left editor accepts a single term:
 - application: `t(a)`
 - multi-arg application: `t(a, b, c)` (parsed as `(((t(a))(b))(c))`)
 
+You can also write a program with definitions:
+
+```text
+$name1 := term;
+$name2 := term2;
+```
+
+When definitions are present, the right panel shows a horizontal list of name bricks. Click any name to display its term graph.
+
 Example:
 
 ```text

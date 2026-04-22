@@ -1,7 +1,12 @@
 package core.model
 
+data class Definition(
+    val name: String,
+    val term: Term,
+)
+
 data class ParsedDocument(
     val sourceText: String,
-    val term: Term?,
+    val definitions: List<Definition>,
     val diagnostics: List<Diagnostic> = emptyList(),
 )

@@ -1,5 +1,6 @@
 package core.parser
 
+import core.model.Definition
 import core.model.Diagnostic
 import core.model.ParsedDocument
 import core.model.Term
@@ -12,12 +13,12 @@ class SimpleTextParser : TextParser {
         val diagnostics = lexer.diagnostics.toMutableList()
 
         val parser = TermSyntaxParser(tokens)
-        val term = parser.parseTerm()
-        diagnostics.addAll(parser.diagnostics)
+        val parseResult = parser.parseProgramOrTerm()
+        diagnostics.addAll(parseResult.diagnostics)
 
         return ParsedDocument(
             sourceText = normalized,
-            term = if (diagnostics.any()) null else term,
+            definitions = parseResult.definitions,
             diagnostics = diagnostics,
         )
     }
@@ -31,6 +32,8 @@ private enum class TokenType {
     LPAREN,
     RPAREN,
     COMMA,
+    ASSIGN,
+    SEMICOLON,
     EOF,
 }
 
@@ -39,6 +42,11 @@ private data class Token(
     val text: String,
     val line: Int,
     val column: Int,
+)
+
+private data class ParseResult(
+    val definitions: List<Definition>,
+    val diagnostics: List<Diagnostic>,
 )
 
 private class TermLexer(private val source: String) {
@@ -54,12 +62,14 @@ private class TermLexer(private val source: String) {
         while (index < source.length) {
             val ch = source[index]
             when {
-                ch.isWhitespace() -> consumeWhitespace(ch)
+                ch.isWhitespace() -> advance(ch)
                 ch == '\\' -> tokens.add(singleToken(TokenType.LAMBDA, "\\"))
                 ch == '.' -> tokens.add(singleToken(TokenType.DOT, "."))
                 ch == '(' -> tokens.add(singleToken(TokenType.LPAREN, "("))
                 ch == ')' -> tokens.add(singleToken(TokenType.RPAREN, ")"))
                 ch == ',' -> tokens.add(singleToken(TokenType.COMMA, ","))
+                ch == ';' -> tokens.add(singleToken(TokenType.SEMICOLON, ";"))
+                ch == ':' -> tokens.add(readAssign())
                 ch == '$' -> tokens.add(readConstant())
                 ch.isLetter() || ch == '_' -> tokens.add(readIdentifier(TokenType.IDENT))
                 else -> {
@@ -73,14 +83,24 @@ private class TermLexer(private val source: String) {
         return tokens
     }
 
-    private fun consumeWhitespace(ch: Char) {
-        advance(ch)
-    }
-
     private fun singleToken(type: TokenType, text: String): Token {
         val token = Token(type, text, line, column)
         advance(source[index])
         return token
+    }
+
+    private fun readAssign(): Token {
+        val startLine = line
+        val startColumn = column
+        advance(':')
+
+        if (index >= source.length || source[index] != '=') {
+            diagnostics.add(Diagnostic("Expected '=' after ':'", startLine, startColumn))
+            return Token(TokenType.ASSIGN, "", startLine, startColumn)
+        }
+
+        advance('=')
+        return Token(TokenType.ASSIGN, ":=", startLine, startColumn)
     }
 
     private fun readConstant(): Token {
@@ -126,53 +146,95 @@ private class TermLexer(private val source: String) {
 }
 
 private class TermSyntaxParser(private val tokens: List<Token>) {
-    val diagnostics: MutableList<Diagnostic> = mutableListOf()
     private var cursor: Int = 0
 
-    fun parseTerm(): Term {
-        val term = parseExpression()
+    fun parseProgramOrTerm(): ParseResult {
+        val initialCursor = cursor
+        val programDiagnostics = mutableListOf<Diagnostic>()
+        val definitions = parseDefinitions(programDiagnostics)
+
+        if (definitions.isNotEmpty() && isAtEnd()) {
+            return ParseResult(definitions = definitions, diagnostics = programDiagnostics)
+        }
+
+        cursor = initialCursor
+        val termDiagnostics = mutableListOf<Diagnostic>()
+        val term = parseExpression(termDiagnostics)
+
         if (!isAtEnd()) {
             val token = peek()
-            diagnostics.add(Diagnostic("Unexpected token '${token.text.ifEmpty { token.type.name }}'", token.line, token.column))
+            termDiagnostics.add(Diagnostic("Unexpected token '${token.text.ifEmpty { token.type.name }}'", token.line, token.column))
         }
-        return term
+
+        return ParseResult(
+            definitions = if (termDiagnostics.any()) emptyList() else listOf(Definition(name = "main", term = term)),
+            diagnostics = termDiagnostics,
+        )
     }
 
-    private fun parseExpression(): Term {
+    private fun parseDefinitions(diagnostics: MutableList<Diagnostic>): MutableList<Definition> {
+        val definitions = mutableListOf<Definition>()
+
+        while (!isAtEnd()) {
+            if (!check(TokenType.CONST_IDENT)) {
+                if (definitions.isEmpty()) {
+                    return mutableListOf()
+                }
+                val token = peek()
+                diagnostics.add(Diagnostic("Expected definition name like '\$name'", token.line, token.column))
+                break
+            }
+
+            val nameToken = advance()
+            if (!match(TokenType.ASSIGN)) {
+                diagnostics.add(Diagnostic("Expected ':=' after definition name", peek().line, peek().column))
+                break
+            }
+
+            val term = parseExpression(diagnostics)
+            definitions.add(Definition(nameToken.text, term))
+
+            if (!match(TokenType.SEMICOLON)) {
+                diagnostics.add(Diagnostic("Expected ';' after definition", peek().line, peek().column))
+                break
+            }
+        }
+
+        return definitions
+    }
+
+    private fun parseExpression(diagnostics: MutableList<Diagnostic>): Term {
         if (match(TokenType.LAMBDA)) {
-            val lambdaToken = previous()
-            val parameter = consume(TokenType.IDENT, "Expected identifier after '\\'")
-            consume(TokenType.DOT, "Expected '.' after lambda parameter")
-            val body = parseExpression()
+            val parameter = consume(TokenType.IDENT, "Expected identifier after '\\'", diagnostics)
+            consume(TokenType.DOT, "Expected '.' after lambda parameter", diagnostics)
+            val body = parseExpression(diagnostics)
             return Term.Lambda(parameter.text, body)
         }
-        return parseApplication()
+        return parseApplication(diagnostics)
     }
 
-    private fun parseApplication(): Term {
-        var expression = parseAtom()
+    private fun parseApplication(diagnostics: MutableList<Diagnostic>): Term {
+        var expression = parseAtom(diagnostics)
 
         while (match(TokenType.LPAREN)) {
             if (check(TokenType.RPAREN)) {
-                val token = peek()
-                diagnostics.add(Diagnostic("Expected at least one argument", token.line, token.column))
+                diagnostics.add(Diagnostic("Expected at least one argument", peek().line, peek().column))
                 advance()
                 continue
             }
 
             val arguments = mutableListOf<Term>()
-            arguments.add(parseExpression())
+            arguments.add(parseExpression(diagnostics))
 
             while (match(TokenType.COMMA)) {
                 if (check(TokenType.RPAREN)) {
-                    val token = peek()
-                    diagnostics.add(Diagnostic("Expected term after ','", token.line, token.column))
+                    diagnostics.add(Diagnostic("Expected term after ','", peek().line, peek().column))
                     break
                 }
-                arguments.add(parseExpression())
+                arguments.add(parseExpression(diagnostics))
             }
 
-            consume(TokenType.RPAREN, "Expected ')' after arguments")
+            consume(TokenType.RPAREN, "Expected ')' after arguments", diagnostics)
             arguments.forEach { argument ->
                 expression = Term.Application(expression, argument)
             }
@@ -181,7 +243,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         return expression
     }
 
-    private fun parseAtom(): Term {
+    private fun parseAtom(diagnostics: MutableList<Diagnostic>): Term {
         if (match(TokenType.IDENT)) {
             return Term.Variable(previous().text)
         }
@@ -189,18 +251,20 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             return Term.Constant(previous().text)
         }
         if (match(TokenType.LPAREN)) {
-            val term = parseExpression()
-            consume(TokenType.RPAREN, "Expected ')' after term")
+            val term = parseExpression(diagnostics)
+            consume(TokenType.RPAREN, "Expected ')' after term", diagnostics)
             return term
         }
 
         val token = peek()
         diagnostics.add(Diagnostic("Expected term", token.line, token.column))
-        advance()
+        if (!isAtEnd()) {
+            advance()
+        }
         return Term.Variable("_")
     }
 
-    private fun consume(type: TokenType, message: String): Token {
+    private fun consume(type: TokenType, message: String, diagnostics: MutableList<Diagnostic>): Token {
         if (check(type)) {
             return advance()
         }

@@ -18,6 +18,7 @@ import org.cef.handler.CefMessageRouterHandlerAdapter
 class WebViewPanel(
     private val initialText: String,
     private val onEditorTextChanged: (String) -> Unit,
+    private val onDefinitionSelected: (String) -> Unit,
 ) : JPanel(BorderLayout()) {
     private val cefApp: CefApp
     private val client: CefClient
@@ -45,13 +46,18 @@ class WebViewPanel(
                 callback: CefQueryCallback?,
             ): Boolean {
                 val payload = request ?: ""
-                if (!payload.startsWith("editorTextChanged:")) {
-                    callback?.failure(400, "Unknown bridge message")
+                if (payload.startsWith("editorTextChanged:")) {
+                    onEditorTextChanged(payload.removePrefix("editorTextChanged:"))
+                    callback?.success("ok")
                     return true
                 }
 
-                onEditorTextChanged(payload.removePrefix("editorTextChanged:"))
-                callback?.success("ok")
+                if (payload.startsWith("selectDefinition:")) {
+                    onDefinitionSelected(payload.removePrefix("selectDefinition:"))
+                    callback?.success("ok")
+                    return true
+                }
+                callback?.failure(400, "Unknown bridge message")
                 return true
             }
         }, false)
