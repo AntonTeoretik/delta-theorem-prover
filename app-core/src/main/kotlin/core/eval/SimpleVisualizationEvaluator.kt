@@ -106,11 +106,20 @@ private class TermGraphBuilder {
                     greenOutputCount = 1,
                 )
 
+                val binderRef = BinderRef(nodeId = node.id, port = 0)
+
                 val extendedScope = scope.toMutableMap()
-                extendedScope[term.parameter] = BinderRef(nodeId = node.id, port = 0)
+                extendedScope[term.parameter] = binderRef
 
                 val body = addTerm(term.body, extendedScope)
                 addBlueEdge(node.id, body, fromPort = 0, toPort = 0)
+
+                if (binderRef.usageCount == 0) {
+                    node.greenOutputCount = 0
+                } else {
+                    node.label = term.parameter
+                    node.width = maxOf(48.0, 22.0 + term.parameter.length * 9.0)
+                }
                 node.id
             }
 
@@ -141,6 +150,7 @@ private class TermGraphBuilder {
 
                 val binder = scope[term.name]
                 if (binder != null) {
+                    binder.usageCount += 1
                     addGreenEdge(binder.nodeId, node.id, fromPort = binder.port, toPort = 0)
                 } else {
                     val rootPort = freeVariablePortByName.getOrPut(term.name) { freeVariablePortByName.size }
@@ -206,7 +216,7 @@ private class TermGraphBuilder {
         val subtreeWidths = mutableMapOf<String, Double>()
         val nodeById = nodes.associateBy { it.id }
         val siblingGap = 36.0
-        val depthGap = 120.0
+        val depthGap = 92.0
         val leftMargin = 40.0
         val topMargin = 36.0
 
@@ -246,6 +256,7 @@ private class TermGraphBuilder {
 private data class BinderRef(
     val nodeId: String,
     val port: Int,
+    var usageCount: Int = 0,
 )
 
 private data class GraphResult(
@@ -258,7 +269,7 @@ private data class GraphResult(
 private data class MutableNode(
     val id: String,
     val type: TermNodeType,
-    val label: String,
+    var label: String,
     var x: Double,
     var y: Double,
     var width: Double,

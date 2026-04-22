@@ -105,6 +105,31 @@ body {
   font-size: 13px;
 }
 
+.header-row {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-row p {
+  margin: 0;
+}
+
+.compact-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #dbc9b4;
+  user-select: none;
+}
+
+.compact-toggle input {
+  accent-color: #ff9b4a;
+}
+
 .canvas-wrap {
   min-height: 0;
   border-radius: 14px;
