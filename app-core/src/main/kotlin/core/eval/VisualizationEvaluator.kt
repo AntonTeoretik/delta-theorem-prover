@@ -4,5 +4,5 @@ import core.model.ParsedDocument
 import core.model.VisualizationData
 
 interface VisualizationEvaluator {
-    fun evaluate(document: ParsedDocument, selectedDefinitionName: String? = null): VisualizationData
+    fun evaluate(document: ParsedDocument, selectedDefinitionName: String? = null, caretOffset: Int? = null): VisualizationData
 }

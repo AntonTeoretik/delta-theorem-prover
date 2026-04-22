@@ -33,6 +33,7 @@ data class TermEdge(
 data class VisualizationData(
     val sourceText: String,
     val diagnostics: List<Diagnostic>,
+    val textHighlights: List<TextHighlight>,
     val definitionNames: List<String>,
     val selectedDefinitionName: String?,
     val freeVariableNames: List<String>,

@@ -22,7 +22,20 @@ function notifyHostDefinitionSelected(name) {
   });
 }
 
+function notifyHostEditorCaretMoved(offset) {
+  if (typeof window.cefQuery !== 'function') {
+    return;
+  }
+
+  window.cefQuery({
+    request: `editorCaretMoved:${offset}`,
+    onSuccess: () => {},
+    onFailure: () => {},
+  });
+}
+
 window.DeltaBridge = {
   notifyHostTextChanged,
   notifyHostDefinitionSelected,
+  notifyHostEditorCaretMoved,
 };

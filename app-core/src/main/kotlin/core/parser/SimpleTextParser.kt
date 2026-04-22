@@ -4,6 +4,7 @@ import core.model.Definition
 import core.model.Diagnostic
 import core.model.ParsedDocument
 import core.model.Term
+import core.model.TextSpan
 
 class SimpleTextParser : TextParser {
     override fun parse(source: String): ParsedDocument {
@@ -42,6 +43,8 @@ private data class Token(
     val text: String,
     val line: Int,
     val column: Int,
+    val startOffset: Int,
+    val endOffset: Int,
 )
 
 private data class ParseResult(
@@ -79,12 +82,13 @@ private class TermLexer(private val source: String) {
             }
         }
 
-        tokens.add(Token(TokenType.EOF, "", line, column))
+        tokens.add(Token(TokenType.EOF, "", line, column, index, index))
         return tokens
     }
 
     private fun singleToken(type: TokenType, text: String): Token {
-        val token = Token(type, text, line, column)
+        val startOffset = index
+        val token = Token(type, text, line, column, startOffset, startOffset + 1)
         advance(source[index])
         return token
     }
@@ -92,34 +96,37 @@ private class TermLexer(private val source: String) {
     private fun readAssign(): Token {
         val startLine = line
         val startColumn = column
+        val startOffset = index
         advance(':')
 
         if (index >= source.length || source[index] != '=') {
             diagnostics.add(Diagnostic("Expected '=' after ':'", startLine, startColumn))
-            return Token(TokenType.ASSIGN, "", startLine, startColumn)
+            return Token(TokenType.ASSIGN, "", startLine, startColumn, startOffset, index)
         }
 
         advance('=')
-        return Token(TokenType.ASSIGN, ":=", startLine, startColumn)
+        return Token(TokenType.ASSIGN, ":=", startLine, startColumn, startOffset, index)
     }
 
     private fun readConstant(): Token {
         val startLine = line
         val startColumn = column
+        val startOffset = index
         advance('$')
 
         if (index >= source.length || !(source[index].isLetter() || source[index] == '_')) {
             diagnostics.add(Diagnostic("Expected identifier after '$'", startLine, startColumn))
-            return Token(TokenType.CONST_IDENT, "", startLine, startColumn)
+            return Token(TokenType.CONST_IDENT, "", startLine, startColumn, startOffset, index)
         }
 
         val ident = readIdentifier(TokenType.IDENT)
-        return Token(TokenType.CONST_IDENT, ident.text, startLine, startColumn)
+        return Token(TokenType.CONST_IDENT, ident.text, startLine, startColumn, startOffset, ident.endOffset)
     }
 
     private fun readIdentifier(type: TokenType): Token {
         val startLine = line
         val startColumn = column
+        val startOffset = index
         val buffer = StringBuilder()
 
         while (index < source.length) {
@@ -131,7 +138,7 @@ private class TermLexer(private val source: String) {
             advance(ch)
         }
 
-        return Token(type, buffer.toString(), startLine, startColumn)
+        return Token(type, buffer.toString(), startLine, startColumn, startOffset, index)
     }
 
     private fun advance(ch: Char) {
@@ -167,7 +174,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
 
         return ParseResult(
-            definitions = if (termDiagnostics.any()) emptyList() else listOf(Definition(name = "main", term = term)),
+            definitions = if (termDiagnostics.any()) emptyList() else listOf(Definition(name = "main", term = term, nameSpan = null)),
             diagnostics = termDiagnostics,
         )
     }
@@ -192,7 +199,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             }
 
             val term = parseExpression(diagnostics)
-            definitions.add(Definition(nameToken.text, term))
+            definitions.add(Definition(nameToken.text, term, TextSpan(nameToken.startOffset, nameToken.endOffset)))
 
             if (!match(TokenType.SEMICOLON)) {
                 diagnostics.add(Diagnostic("Expected ';' after definition", peek().line, peek().column))
@@ -205,10 +212,21 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
     private fun parseExpression(diagnostics: MutableList<Diagnostic>): Term {
         if (match(TokenType.LAMBDA)) {
-            val parameter = consume(TokenType.IDENT, "Expected identifier after '\\'", diagnostics)
+            val parameters = mutableListOf<Pair<String, TextSpan>>()
+            val first = consume(TokenType.IDENT, "Expected identifier after '\\'", diagnostics)
+            parameters += first.text.ifBlank { "_" } to TextSpan(first.startOffset, first.endOffset)
+
+            while (match(TokenType.COMMA)) {
+                val next = consume(TokenType.IDENT, "Expected identifier after ',' in lambda", diagnostics)
+                parameters += next.text.ifBlank { "_" } to TextSpan(next.startOffset, next.endOffset)
+            }
+
             consume(TokenType.DOT, "Expected '.' after lambda parameter", diagnostics)
             val body = parseExpression(diagnostics)
-            return Term.Lambda(parameter.text, body)
+
+            return parameters.asReversed().fold(body) { acc, (parameterName, parameterSpan) ->
+                Term.Lambda(parameterName, acc, parameterSpan)
+            }
         }
         return parseApplication(diagnostics)
     }
@@ -245,10 +263,12 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
     private fun parseAtom(diagnostics: MutableList<Diagnostic>): Term {
         if (match(TokenType.IDENT)) {
-            return Term.Variable(previous().text)
+            val token = previous()
+            return Term.Variable(token.text, TextSpan(token.startOffset, token.endOffset))
         }
         if (match(TokenType.CONST_IDENT)) {
-            return Term.Constant(previous().text)
+            val token = previous()
+            return Term.Constant(token.text, TextSpan(token.startOffset, token.endOffset))
         }
         if (match(TokenType.LPAREN)) {
             val term = parseExpression(diagnostics)
@@ -261,7 +281,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         if (!isAtEnd()) {
             advance()
         }
-        return Term.Variable("_")
+        return Term.Variable("_", TextSpan(token.startOffset, token.endOffset))
     }
 
     private fun consume(type: TokenType, message: String, diagnostics: MutableList<Diagnostic>): Token {
@@ -271,7 +291,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
         val token = peek()
         diagnostics.add(Diagnostic(message, token.line, token.column))
-        return Token(type, "", token.line, token.column)
+        return Token(type, "", token.line, token.column, token.startOffset, token.endOffset)
     }
 
     private fun match(type: TokenType): Boolean {

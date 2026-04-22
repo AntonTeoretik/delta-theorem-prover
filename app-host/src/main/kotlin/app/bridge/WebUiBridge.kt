@@ -2,6 +2,7 @@ package app.bridge
 
 import core.model.Diagnostic
 import core.model.TermEdge
+import core.model.TextHighlight
 import core.model.TermNode
 import core.model.VisualizationData
 import org.cef.browser.CefBrowser
@@ -54,6 +55,7 @@ class WebUiBridge(private val browser: CefBrowser) {
 
     private fun VisualizationData.toJson(): String {
         val diagnosticsJson = diagnostics.joinToString(",") { it.toJson() }
+        val textHighlightsJson = textHighlights.joinToString(",") { it.toJson() }
         val definitionsJson = definitionNames.joinToString(",") { "\"${escapeJson(it)}\"" }
         val selectedDefinitionJson = selectedDefinitionName?.let { "\"${escapeJson(it)}\"" } ?: "null"
         val freeVarsJson = freeVariableNames.joinToString(",") { "\"${escapeJson(it)}\"" }
@@ -65,6 +67,7 @@ class WebUiBridge(private val browser: CefBrowser) {
             {
               "sourceText":"${escapeJson(sourceText)}",
               "diagnostics":[$diagnosticsJson],
+              "textHighlights":[$textHighlightsJson],
               "definitionNames":[$definitionsJson],
               "selectedDefinitionName":$selectedDefinitionJson,
               "freeVariableNames":[$freeVarsJson],
@@ -77,6 +80,10 @@ class WebUiBridge(private val browser: CefBrowser) {
 
     private fun Diagnostic.toJson(): String {
         return """{"message":"${escapeJson(message)}","line":$line,"column":$column}"""
+    }
+
+    private fun TextHighlight.toJson(): String {
+        return """{"startOffset":${span.startOffset},"endOffset":${span.endOffset},"kind":"${kind.name}"}"""
     }
 
     private fun TermNode.toJson(): String {

@@ -18,6 +18,7 @@ import org.cef.handler.CefMessageRouterHandlerAdapter
 class WebViewPanel(
     private val initialText: String,
     private val onEditorTextChanged: (String) -> Unit,
+    private val onEditorCaretMoved: (Int) -> Unit,
     private val onDefinitionSelected: (String) -> Unit,
 ) : JPanel(BorderLayout()) {
     private val cefApp: CefApp
@@ -48,6 +49,14 @@ class WebViewPanel(
                 val payload = request ?: ""
                 if (payload.startsWith("editorTextChanged:")) {
                     onEditorTextChanged(payload.removePrefix("editorTextChanged:"))
+                    callback?.success("ok")
+                    return true
+                }
+
+                if (payload.startsWith("editorCaretMoved:")) {
+                    val rawOffset = payload.removePrefix("editorCaretMoved:")
+                    val caretOffset = rawOffset.toIntOrNull() ?: 0
+                    onEditorCaretMoved(caretOffset)
                     callback?.success("ok")
                     return true
                 }

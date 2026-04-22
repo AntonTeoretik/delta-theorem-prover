@@ -22,7 +22,10 @@
     <section class="split-layout">
       <section class="editor-wrap">
         <label for="editorInput">Input</label>
-        <textarea id="editorInput" spellcheck="false"></textarea>
+        <div class="editor-layer">
+          <pre id="editorHighlight" aria-hidden="true"></pre>
+          <textarea id="editorInput" spellcheck="false"></textarea>
+        </div>
       </section>
       <section class="canvas-wrap">
         <div id="definitionBar" class="definition-bar"></div>

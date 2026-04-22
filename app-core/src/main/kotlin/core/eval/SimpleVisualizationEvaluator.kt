@@ -3,18 +3,23 @@ package core.eval
 import core.model.ParsedDocument
 import core.model.Term
 import core.model.TermEdge
+import core.model.TextHighlight
+import core.model.TextHighlightKind
+import core.model.TextSpan
 import core.model.TermNode
 import core.model.TermNodeType
 import core.model.VisualizationData
 
 class SimpleVisualizationEvaluator : VisualizationEvaluator {
-    override fun evaluate(document: ParsedDocument, selectedDefinitionName: String?): VisualizationData {
+    override fun evaluate(document: ParsedDocument, selectedDefinitionName: String?, caretOffset: Int?): VisualizationData {
         val definitionNames = document.definitions.map { it.name }
+        val textHighlights = buildTextHighlights(document, caretOffset)
         val selected = document.definitions.firstOrNull { it.name == selectedDefinitionName }
             ?: document.definitions.firstOrNull()
             ?: return VisualizationData(
                 sourceText = document.sourceText,
                 diagnostics = document.diagnostics,
+                textHighlights = textHighlights,
                 definitionNames = definitionNames,
                 selectedDefinitionName = null,
                 freeVariableNames = emptyList(),
@@ -29,6 +34,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         return VisualizationData(
             sourceText = document.sourceText,
             diagnostics = document.diagnostics,
+            textHighlights = textHighlights,
             definitionNames = definitionNames,
             selectedDefinitionName = selected.name,
             freeVariableNames = graph.freeVariableNames,
@@ -37,7 +43,181 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             greenEdges = graph.greenEdges,
         )
     }
+
+    private fun buildTextHighlights(document: ParsedDocument, caretOffset: Int?): List<TextHighlight> {
+        val collector = SymbolCollector()
+        document.definitions.forEach { definition ->
+            collector.collect(definition.term, linkedMapOf())
+        }
+
+        val highlights = mutableListOf<TextHighlight>()
+        collector.constantSpans.forEach { (_, spans) ->
+            spans.forEach { span ->
+                highlights += TextHighlight(span, TextHighlightKind.CONSTANT)
+            }
+        }
+        document.definitions.forEach { definition ->
+            definition.nameSpan?.let { span ->
+                highlights += TextHighlight(span, TextHighlightKind.CONSTANT)
+            }
+        }
+        collector.freeVariableSpans.forEach { span ->
+            highlights += TextHighlight(span, TextHighlightKind.FREE_VARIABLE)
+        }
+        collector.boundVariableSpans.forEach { span ->
+            highlights += TextHighlight(span, TextHighlightKind.BOUND_VARIABLE)
+        }
+
+        val activeConstant = resolveActiveConstant(document, collector.constantSpans, caretOffset)
+        if (activeConstant != null) {
+            highlights += TextHighlight(activeConstant.usageSpan, TextHighlightKind.ACTIVE_CONSTANT_USAGE)
+            highlights += TextHighlight(activeConstant.definitionSpan, TextHighlightKind.ACTIVE_CONSTANT_DEFINITION)
+        }
+
+        val activeBound = resolveActiveBoundLink(collector, caretOffset)
+        if (activeBound != null) {
+            highlights += TextHighlight(activeBound.definitionSpan, TextHighlightKind.ACTIVE_BOUND_DEFINITION)
+            activeBound.usageSpans.forEach { span ->
+                highlights += TextHighlight(span, TextHighlightKind.ACTIVE_BOUND_USAGE)
+            }
+        }
+
+        return highlights
+    }
+
+    private fun resolveActiveConstant(
+        document: ParsedDocument,
+        constantSpans: Map<String, List<TextSpan>>,
+        caretOffset: Int?,
+    ): ActiveConstantLink? {
+        if (caretOffset == null) {
+            return null
+        }
+
+        val hit = constantSpans
+            .flatMap { (name, spans) -> spans.map { name to it } }
+            .firstOrNull { (_, span) -> caretOffset >= span.startOffset && caretOffset < span.endOffset }
+            ?: return null
+
+        val activeName = hit.first
+        val usageSpan = hit.second
+
+        val definition = document.definitions
+            .lastOrNull { def ->
+                val definitionSpan = def.nameSpan
+                definitionSpan != null && def.name == activeName && definitionSpan.startOffset < usageSpan.startOffset
+            }
+            ?: return null
+
+        return ActiveConstantLink(
+            usageSpan = usageSpan,
+            definitionSpan = definition.nameSpan ?: return null,
+        )
+    }
+
+    private fun resolveActiveBoundLink(
+        collector: SymbolCollector,
+        caretOffset: Int?,
+    ): ActiveBoundLink? {
+        if (caretOffset == null) {
+            return null
+        }
+
+        val declarationHit = collector.bindersById.values
+            .firstOrNull { caretOffset in it.declarationSpan.startOffset until it.declarationSpan.endOffset }
+        if (declarationHit != null) {
+            return ActiveBoundLink(
+                definitionSpan = declarationHit.declarationSpan,
+                usageSpans = declarationHit.useSpans.toList(),
+            )
+        }
+
+        val usageHit = collector.bindersById.values
+            .asSequence()
+            .flatMap { binder -> binder.useSpans.asSequence().map { span -> binder to span } }
+            .firstOrNull { (_, span) -> caretOffset in span.startOffset until span.endOffset }
+            ?: return null
+
+        return ActiveBoundLink(
+            definitionSpan = usageHit.first.declarationSpan,
+            usageSpans = listOf(usageHit.second),
+        )
+    }
 }
+
+private class SymbolCollector {
+    val constantSpans: MutableMap<String, MutableList<TextSpan>> = linkedMapOf()
+    val freeVariableSpans: MutableList<TextSpan> = mutableListOf()
+    val boundVariableSpans: MutableList<TextSpan> = mutableListOf()
+    val bindersById: MutableMap<Int, BinderInfo> = linkedMapOf()
+
+    private var nextBinderId: Int = 0
+
+    fun collect(term: Term, boundStacks: MutableMap<String, MutableList<Int>>) {
+        when (term) {
+            is Term.Application -> {
+                collect(term.function, boundStacks)
+                collect(term.argument, boundStacks)
+            }
+
+            is Term.Lambda -> {
+                val binderId = nextBinderId++
+                val binderInfo = BinderInfo(
+                    id = binderId,
+                    declarationSpan = term.parameterSpan,
+                    useSpans = mutableListOf(),
+                )
+                bindersById[binderId] = binderInfo
+                boundVariableSpans += term.parameterSpan
+
+                val stack = boundStacks.getOrPut(term.parameter) { mutableListOf() }
+                stack.add(binderId)
+
+                collect(term.body, boundStacks)
+
+                if (stack.isNotEmpty()) {
+                    stack.removeAt(stack.lastIndex)
+                }
+                if (stack.isEmpty()) {
+                    boundStacks.remove(term.parameter)
+                }
+            }
+
+            is Term.Constant -> {
+                constantSpans.getOrPut(term.name) { mutableListOf() }.add(term.span)
+            }
+
+            is Term.Variable -> {
+                val stack = boundStacks[term.name]
+                if (!stack.isNullOrEmpty()) {
+                    boundVariableSpans += term.span
+                    val binderId = stack.lastOrNull()
+                    if (binderId != null) {
+                        bindersById[binderId]?.useSpans?.add(term.span)
+                    }
+                } else {
+                    freeVariableSpans += term.span
+                }
+            }
+        }
+    }
+}
+
+private data class ActiveConstantLink(
+    val usageSpan: TextSpan,
+    val definitionSpan: TextSpan,
+)
+
+private data class ActiveBoundLink(
+    val definitionSpan: TextSpan,
+    val usageSpans: List<TextSpan>,
+)
+
+private data class BinderInfo(
+    val id: Int,
+    val declarationSpan: TextSpan,
+    val useSpans: MutableList<TextSpan>,
+)
 
 private class TermGraphBuilder {
     private val nodes = mutableListOf<MutableNode>()

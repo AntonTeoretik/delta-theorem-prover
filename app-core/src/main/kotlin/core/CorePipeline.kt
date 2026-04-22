@@ -10,8 +10,8 @@ class CorePipeline(
     private val parser: TextParser = SimpleTextParser(),
     private val evaluator: VisualizationEvaluator = SimpleVisualizationEvaluator(),
 ) {
-    fun buildVisualization(source: String, selectedDefinitionName: String? = null): VisualizationData {
+    fun buildVisualization(source: String, selectedDefinitionName: String? = null, caretOffset: Int? = null): VisualizationData {
         val parsed = parser.parse(source)
-        return evaluator.evaluate(parsed, selectedDefinitionName)
+        return evaluator.evaluate(parsed, selectedDefinitionName, caretOffset)
     }
 }
