@@ -434,25 +434,21 @@
         return;
       }
 
-      const usedBinders = [];
+      const chainBinders = [];
       const binderPortByNodeId = new Map();
       chain.forEach((lambdaId) => {
         const lambdaNode = nodeById.get(lambdaId);
         if (!lambdaNode) {
           return;
         }
-        if ((lambdaNode.greenOutputCount || 0) > 0) {
-          binderPortByNodeId.set(lambdaId, usedBinders.length);
-          if (lambdaNode.label) {
-            usedBinders.push(lambdaNode.label);
-          }
-        }
+        binderPortByNodeId.set(lambdaId, chainBinders.length);
+        chainBinders.push(lambdaNode.label || '_');
       });
 
-      topNode.greenOutputCount = usedBinders.length;
-      topNode.label = usedBinders.join(', ');
+      topNode.greenOutputCount = chainBinders.length;
+      topNode.label = chainBinders.join(', ');
       if (topNode.label) {
-        topNode.width = Math.max(topNode.width, 24 + topNode.label.length * 7.2);
+        topNode.width = Math.max(topNode.width, 24 + topNode.label.length * 7.2, 24 + topNode.greenOutputCount * 16);
       }
 
       chain.forEach((lambdaId, index) => {
@@ -560,16 +556,16 @@
     ctx.fillText('λ', nodeCenterX(node), node.y + node.height / 2);
     ctx.textBaseline = 'alphabetic';
 
-    if (node.label) {
+    if (node.label && (node.greenOutputCount || 0) > 0) {
       ctx.fillStyle = 'rgba(140, 220, 156, 0.74)';
       ctx.font = '11px "Segoe UI", sans-serif';
       ctx.fillText(node.label, nodeCenterX(node), node.y + node.height - 6);
     }
   }
 
-  function drawSquareNode(node, text, textColor) {
-    ctx.fillStyle = '#323841';
-    ctx.strokeStyle = '#ffb173';
+  function drawSquareNode(node, text, textColor, fillColor, borderColor) {
+    ctx.fillStyle = fillColor || '#323841';
+    ctx.strokeStyle = borderColor || '#ffb173';
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.roundRect(node.x, node.y, node.width, node.height, 7);
@@ -602,7 +598,10 @@
     }
   }
 
-  function drawPorts(node) {
+  function drawPorts(node, isFreeVariableNode) {
+    const greenPortColor = isFreeVariableNode ? 'rgba(157, 167, 255, 0.88)' : '#72ca86';
+    const rootGreenPortColor = node.type === 'ROOT' ? 'rgba(157, 167, 255, 0.88)' : greenPortColor;
+
     for (let i = 0; i < (node.blueInputCount || 0); i += 1) {
       const p = blueInPoint(node, i);
       ctx.fillStyle = '#68a7ff';
@@ -621,7 +620,7 @@
 
     for (let i = 0; i < (node.greenInputCount || 0); i += 1) {
       const p = greenInPoint(node, i);
-      ctx.fillStyle = '#72ca86';
+      ctx.fillStyle = greenPortColor;
       ctx.beginPath();
       ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2);
       ctx.fill();
@@ -629,7 +628,7 @@
 
     for (let i = 0; i < (node.greenOutputCount || 0); i += 1) {
       const p = greenOutPoint(node, i);
-      ctx.fillStyle = '#72ca86';
+      ctx.fillStyle = rootGreenPortColor;
       ctx.beginPath();
       ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2);
       ctx.fill();
@@ -644,6 +643,13 @@
     ctx.setTransform(view.scale, 0, 0, view.scale, view.offsetX, view.offsetY);
 
     const nodeById = new Map((payload.nodes || []).map((node) => [node.id, node]));
+    const rootNodeIds = new Set((payload.nodes || []).filter((node) => node.type === 'ROOT').map((node) => node.id));
+    const freeVarNodeIds = new Set();
+    (payload.greenEdges || []).forEach((edge) => {
+      if (rootNodeIds.has(edge.fromNodeId)) {
+        freeVarNodeIds.add(edge.toNodeId);
+      }
+    });
 
     (payload.blueEdges || []).forEach((edge) => {
       const from = nodeById.get(edge.fromNodeId);
@@ -654,15 +660,6 @@
       drawSpline(blueOutPoint(from, edge.fromPort), blueInPoint(to, edge.toPort), '#6ea8ff', 44);
     });
 
-    (payload.greenEdges || []).forEach((edge) => {
-      const from = nodeById.get(edge.fromNodeId);
-      const to = nodeById.get(edge.toNodeId);
-      if (!from || !to) {
-        return;
-      }
-      drawSpline(greenOutPoint(from, edge.fromPort), greenInPoint(to, edge.toPort), 'rgba(122, 205, 139, 0.62)', 34);
-    });
-
     (payload.nodes || []).forEach((node) => {
       if (node.type === 'ROOT') {
         drawRootNode(node, payload.freeVariableNames || []);
@@ -671,11 +668,27 @@
       } else if (node.type === 'LAMBDA') {
         drawLambdaNode(node);
       } else if (node.type === 'CONST') {
-        drawSquareNode(node, node.label || 'c', '#ffb173');
+        drawSquareNode(node, node.label || 'c', '#ffd8b4', '#4d3528', '#ffb173');
       } else if (node.type === 'VAR') {
-        drawSquareNode(node, node.label || 'x', 'rgba(140, 220, 156, 0.74)');
+        if (freeVarNodeIds.has(node.id)) {
+          drawSquareNode(node, node.label || 'x', 'rgba(178, 183, 255, 0.92)', '#34384d', '#9da7ff');
+        } else {
+          drawSquareNode(node, node.label || 'x', 'rgba(170, 226, 176, 0.84)', '#2f4437', '#89d49a');
+        }
       }
-      drawPorts(node);
+      drawPorts(node, freeVarNodeIds.has(node.id));
+    });
+
+    (payload.greenEdges || []).forEach((edge) => {
+      const from = nodeById.get(edge.fromNodeId);
+      const to = nodeById.get(edge.toNodeId);
+      if (!from || !to) {
+        return;
+      }
+      const edgeColor = rootNodeIds.has(edge.fromNodeId)
+        ? 'rgba(157, 167, 255, 0.42)'
+        : 'rgba(122, 205, 139, 0.38)';
+      drawSpline(greenOutPoint(from, edge.fromPort), greenInPoint(to, edge.toPort), edgeColor, 34);
     });
 
     const diagnostics = payload.diagnostics || [];

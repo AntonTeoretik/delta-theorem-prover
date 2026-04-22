@@ -103,7 +103,7 @@ private class TermGraphBuilder {
             is Term.Lambda -> {
                 val node = addNode(
                     type = TermNodeType.LAMBDA,
-                    label = "",
+                    label = term.parameter,
                     width = 48.0,
                     height = 48.0,
                     blueInputCount = 1,
@@ -122,8 +122,8 @@ private class TermGraphBuilder {
 
                 if (binderRef.usageCount == 0) {
                     node.greenOutputCount = 0
+                    node.width = 48.0
                 } else {
-                    node.label = term.parameter
                     node.width = maxOf(48.0, 22.0 + term.parameter.length * 9.0)
                 }
                 node.id
