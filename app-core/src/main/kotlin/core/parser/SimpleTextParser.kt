@@ -66,7 +66,7 @@ private class TermLexer(private val source: String) {
             val ch = source[index]
             when {
                 ch.isWhitespace() -> advance(ch)
-                ch == '\\' -> tokens.add(singleToken(TokenType.LAMBDA, "\\"))
+                ch == '\\' -> tokens.add(readLambda())
                 ch == '.' -> tokens.add(singleToken(TokenType.DOT, "."))
                 ch == '(' -> tokens.add(singleToken(TokenType.LPAREN, "("))
                 ch == ')' -> tokens.add(singleToken(TokenType.RPAREN, ")"))
@@ -106,6 +106,19 @@ private class TermLexer(private val source: String) {
 
         advance('=')
         return Token(TokenType.ASSIGN, ":=", startLine, startColumn, startOffset, index)
+    }
+
+    private fun readLambda(): Token {
+        val startLine = line
+        val startColumn = column
+        val startOffset = index
+        advance('\\')
+
+        if (index >= source.length || !source[index].isLambdaSpacing()) {
+            diagnostics.add(Diagnostic("Expected whitespace after '\\'", startLine, startColumn))
+        }
+
+        return Token(TokenType.LAMBDA, "\\", startLine, startColumn, startOffset, index)
     }
 
     private fun readConstant(): Token {
@@ -150,6 +163,8 @@ private class TermLexer(private val source: String) {
             column += 1
         }
     }
+
+    private fun Char.isLambdaSpacing(): Boolean = this == ' ' || this == '\t'
 }
 
 private class TermSyntaxParser(private val tokens: List<Token>) {

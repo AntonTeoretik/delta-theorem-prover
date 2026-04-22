@@ -65,6 +65,33 @@ function escapeHtml(text) {
     .replaceAll('>', '&gt;');
 }
 
+function buildOverlayText(sourceText) {
+  const isLambdaSpacing = (ch) => ch === ' ' || ch === '\t';
+
+  let result = '';
+  let hideWhitespaceAfterLambda = false;
+
+  for (let i = 0; i < sourceText.length; i += 1) {
+    const ch = sourceText[i];
+
+    if (ch === '\\' && i + 1 < sourceText.length && isLambdaSpacing(sourceText[i + 1])) {
+      result += 'λ';
+      hideWhitespaceAfterLambda = true;
+      continue;
+    }
+
+    if (hideWhitespaceAfterLambda && isLambdaSpacing(ch)) {
+      result += '\u200b';
+      continue;
+    }
+
+    hideWhitespaceAfterLambda = false;
+    result += ch;
+  }
+
+  return result;
+}
+
 function highlightClassFor(kind) {
   if (kind === 'CONSTANT') {
     return 'hl-constant';
@@ -92,6 +119,7 @@ function highlightClassFor(kind) {
 
 function buildEditorHighlightHtml(text, spans) {
   const sourceText = text || '';
+  const overlayText = buildOverlayText(sourceText);
   if (sourceText.length === 0) {
     return '\n';
   }
@@ -109,7 +137,7 @@ function buildEditorHighlightHtml(text, spans) {
     .filter((span) => span.end > span.start && span.kind);
 
   if (validSpans.length === 0) {
-    return `${escapeHtml(sourceText)}\n`;
+    return `${escapeHtml(overlayText)}\n`;
   }
 
   const starts = new Map();
@@ -156,7 +184,7 @@ function buildEditorHighlightHtml(text, spans) {
       continue;
     }
 
-    const segment = escapeHtml(sourceText.slice(point, nextPoint));
+    const segment = escapeHtml(overlayText.slice(point, nextPoint));
     if (segment.length === 0) {
       continue;
     }
