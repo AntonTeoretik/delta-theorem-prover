@@ -705,7 +705,12 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
         if (match(TokenType.SYMBOLIC_IDENT)) {
             val token = previous()
-            return Term.Constant(token.text, TextSpan(token.startOffset, token.endOffset))
+            val span = TextSpan(token.startOffset, token.endOffset)
+            return if (token.text.isCommittedVariableSymbol()) {
+                Term.Variable(token.text, span)
+            } else {
+                Term.Constant(token.text, span)
+            }
         }
         if (match(TokenType.LPAREN)) {
             val term = parseExpression(diagnostics)
@@ -801,11 +806,18 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         val operatorSpan = TextSpan(operatorToken.startOffset, operatorToken.endOffset)
         val operatorTerm = when (operatorToken.type) {
             TokenType.IDENT -> Term.Variable(operatorToken.text, operatorSpan)
-            TokenType.CONST_IDENT, TokenType.BACKSLASH_CONST, TokenType.SYMBOLIC_IDENT -> Term.Constant(operatorToken.text, operatorSpan)
+            TokenType.CONST_IDENT, TokenType.BACKSLASH_CONST -> Term.Constant(operatorToken.text, operatorSpan)
+            TokenType.SYMBOLIC_IDENT -> if (operatorToken.text.isCommittedVariableSymbol()) {
+                Term.Variable(operatorToken.text, operatorSpan)
+            } else {
+                Term.Constant(operatorToken.text, operatorSpan)
+            }
             else -> Term.Variable(operatorToken.text, operatorSpan)
         }
         return Term.Application(Term.Application(operatorTerm, left), right)
     }
+
+    private fun String.isCommittedVariableSymbol(): Boolean = this in COMMITTED_SYMBOL_CONSTANTS
 
     private fun makePiFromArrow(left: Term, right: Term, arrowToken: Token): Term {
         if (left is Term.Typed && left.term is Term.Variable) {
@@ -905,5 +917,6 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         const val PI_ARROW_PRECEDENCE: Int = 0
         const val TYPE_ANNOTATION_PRECEDENCE: Int = 1
         const val DEFAULT_BACKTICK_PRECEDENCE: Int = 9
+        val COMMITTED_SYMBOL_CONSTANTS: Set<String> = SymbolDisplay.symbolReplacements.values.toSet()
     }
 }
