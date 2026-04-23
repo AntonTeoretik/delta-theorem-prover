@@ -2,7 +2,8 @@ package core.model
 
 data class Definition(
     val name: String,
-    val term: Term,
+    val type: Term?,
+    val implementation: Term?,
     val nameSpan: TextSpan?,
 )
 

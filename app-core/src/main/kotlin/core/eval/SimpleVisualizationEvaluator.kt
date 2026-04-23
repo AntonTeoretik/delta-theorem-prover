@@ -31,8 +31,25 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 greenEdges = emptyList(),
             )
 
+        val selectedTerm = selected.implementation ?: selected.type
+        if (selectedTerm == null) {
+            return VisualizationData(
+                sourceText = document.sourceText,
+                diagnostics = document.diagnostics,
+                textHighlights = textHighlights,
+                symbolReplacements = SymbolDisplay.symbolReplacements,
+                infixDeclarations = document.infixDeclarations,
+                definitionNames = definitionNames,
+                selectedDefinitionName = selected.name,
+                freeVariableNames = emptyList(),
+                nodes = emptyList(),
+                blueEdges = emptyList(),
+                greenEdges = emptyList(),
+            )
+        }
+
         val builder = TermGraphBuilder()
-        val graph = builder.build(selected.term)
+        val graph = builder.build(selectedTerm)
 
         return VisualizationData(
             sourceText = document.sourceText,
@@ -52,7 +69,8 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
     private fun buildTextHighlights(document: ParsedDocument, caretOffset: Int?): List<TextHighlight> {
         val collector = SymbolCollector()
         document.definitions.forEach { definition ->
-            collector.collect(definition.term, linkedMapOf())
+            definition.type?.let { collector.collect(it, linkedMapOf()) }
+            definition.implementation?.let { collector.collect(it, linkedMapOf()) }
         }
 
         val highlights = mutableListOf<TextHighlight>()
@@ -178,6 +196,10 @@ private class SymbolCollector {
                 val stack = boundStacks.getOrPut(term.parameter) { mutableListOf() }
                 stack.add(binderId)
 
+                term.parameterType?.let { parameterType ->
+                    collect(parameterType, boundStacks)
+                }
+
                 collect(term.body, boundStacks)
 
                 if (stack.isNotEmpty()) {
@@ -203,6 +225,11 @@ private class SymbolCollector {
                 } else {
                     freeVariableSpans += term.span
                 }
+            }
+
+            is Term.Typed -> {
+                collect(term.term, boundStacks)
+                collect(term.type, boundStacks)
             }
         }
     }
@@ -311,6 +338,24 @@ private class TermGraphBuilder {
                 } else {
                     node.width = maxOf(48.0, 22.0 + term.parameter.length * 9.0)
                 }
+                node.id
+            }
+
+            is Term.Typed -> {
+                val node = addNode(
+                    type = TermNodeType.TYPE,
+                    label = ":",
+                    width = 48.0,
+                    height = 48.0,
+                    blueInputCount = 1,
+                    blueOutputCount = 2,
+                    greenInputCount = 0,
+                    greenOutputCount = 0,
+                )
+                val expression = addTerm(term.term, scope)
+                val type = addTerm(term.type, scope)
+                addBlueEdge(node.id, expression, fromPort = 0, toPort = 0)
+                addBlueEdge(node.id, type, fromPort = 1, toPort = 0)
                 node.id
             }
 

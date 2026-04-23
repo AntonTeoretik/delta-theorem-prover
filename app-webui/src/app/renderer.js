@@ -260,6 +260,8 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
         drawRootNode(ctx, node, payload.freeVariableNames || []);
       } else if (node.type === 'APP') {
         drawAppNode(ctx, node);
+      } else if (node.type === 'TYPE') {
+        drawSquareNode(ctx, node, ':', '#f3e8db');
       } else if (node.type === 'LAMBDA') {
         drawLambdaNode(ctx, node);
       } else if (node.type === 'CONST') {

@@ -39,6 +39,7 @@ private enum class TokenType {
     LPAREN,
     RPAREN,
     COMMA,
+    COLON,
     ASSIGN,
     SEMICOLON,
     BACKTICK,
@@ -82,7 +83,7 @@ private class TermLexer(private val source: String) {
                 ch == ',' -> tokens.add(singleToken(TokenType.COMMA, ","))
                 ch == ';' -> tokens.add(singleToken(TokenType.SEMICOLON, ";"))
                 ch == '`' -> tokens.add(singleToken(TokenType.BACKTICK, "`"))
-                ch == ':' -> tokens.add(readAssign())
+                ch == ':' -> tokens.add(readColonOrAssign())
                 ch == '$' -> tokens.add(readDollarConstant())
                 ch.isDigit() -> tokens.add(readInteger())
                 ch.isLetter() || ch == '_' -> tokens.add(readIdentifier(TokenType.IDENT))
@@ -105,15 +106,14 @@ private class TermLexer(private val source: String) {
         return token
     }
 
-    private fun readAssign(): Token {
+    private fun readColonOrAssign(): Token {
         val startLine = line
         val startColumn = column
         val startOffset = index
         advance(':')
 
         if (index >= source.length || source[index] != '=') {
-            diagnostics.add(Diagnostic("Expected '=' after ':'", startLine, startColumn))
-            return Token(TokenType.ASSIGN, "", startLine, startColumn, startOffset, index)
+            return Token(TokenType.COLON, ":", startLine, startColumn, startOffset, index)
         }
 
         advance('=')
@@ -280,7 +280,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             )
         }
 
-        if (isDefinitionStart()) {
+        if (shouldParseDefinitions()) {
             val definitions = parseDefinitions(diagnostics)
             if (!isAtEnd()) {
                 val token = peek()
@@ -301,10 +301,21 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
 
         return ParseResult(
-            definitions = if (termDiagnostics.any()) emptyList() else listOf(Definition(name = "main", term = term, nameSpan = null)),
+            definitions = if (termDiagnostics.any()) {
+                emptyList()
+            } else {
+                listOf(Definition(name = "main", type = null, implementation = term, nameSpan = null))
+            },
             infixDeclarations = infixDeclarations.toList(),
             diagnostics = diagnostics + termDiagnostics,
         )
+    }
+
+    private fun shouldParseDefinitions(): Boolean {
+        if (!isDefinitionStart()) {
+            return false
+        }
+        return tokens.subList(cursor, tokens.size).any { it.type == TokenType.SEMICOLON }
     }
 
     private fun parseLeadingInfixDirectives(diagnostics: MutableList<Diagnostic>) {
@@ -352,7 +363,11 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun isDefinitionStart(): Boolean {
-        return check(TokenType.CONST_IDENT) && peek(1).type == TokenType.ASSIGN
+        if (!check(TokenType.CONST_IDENT)) {
+            return false
+        }
+        val next = peek(1).type
+        return next == TokenType.COLON || next == TokenType.ASSIGN || next == TokenType.SEMICOLON
     }
 
     private fun parseDefinitions(diagnostics: MutableList<Diagnostic>): MutableList<Definition> {
@@ -366,10 +381,24 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             }
 
             val nameToken = advance()
-            advance()
+            var type: Term? = null
+            var implementation: Term? = null
 
-            val term = parseExpression(diagnostics)
-            definitions.add(Definition(nameToken.text, term, TextSpan(nameToken.startOffset, nameToken.endOffset)))
+            if (match(TokenType.COLON)) {
+                type = parseExpression(diagnostics)
+            }
+            if (match(TokenType.ASSIGN)) {
+                implementation = parseExpression(diagnostics)
+            }
+
+            definitions.add(
+                Definition(
+                    name = nameToken.text,
+                    type = type,
+                    implementation = implementation,
+                    nameSpan = TextSpan(nameToken.startOffset, nameToken.endOffset),
+                ),
+            )
 
             if (!match(TokenType.SEMICOLON)) {
                 diagnostics.add(Diagnostic("Expected ';' after definition", peek().line, peek().column))
@@ -415,21 +444,119 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun parseLambdaExpression(diagnostics: MutableList<Diagnostic>): Term {
-        val parameters = mutableListOf<Pair<String, TextSpan>>()
-        val first = consume(TokenType.IDENT, "Expected identifier after '\\'", diagnostics)
-        parameters += first.text.ifBlank { "_" } to TextSpan(first.startOffset, first.endOffset)
-
-        while (match(TokenType.COMMA)) {
-            val next = consume(TokenType.IDENT, "Expected identifier after ',' in lambda", diagnostics)
-            parameters += next.text.ifBlank { "_" } to TextSpan(next.startOffset, next.endOffset)
+        val parameters = if (isGroupedLambdaParameterListStart()) {
+            parseLambdaParameterGroup(diagnostics)
+        } else {
+            val list = mutableListOf<LambdaParameter>()
+            list += parseLambdaParameter(diagnostics)
+            while (match(TokenType.COMMA)) {
+                list += parseLambdaParameter(diagnostics)
+            }
+            list
         }
 
         consume(TokenType.DOT, "Expected '.' after lambda parameter", diagnostics)
         val body = parseExpression(diagnostics)
 
-        return parameters.asReversed().fold(body) { acc, (parameterName, parameterSpan) ->
-            Term.Lambda(parameterName, acc, parameterSpan)
+        return parameters.asReversed().fold(body) { acc, parameter ->
+            Term.Lambda(parameter.name, parameter.type, acc, parameter.span)
         }
+    }
+
+    private fun isGroupedLambdaParameterListStart(): Boolean {
+        if (!check(TokenType.LPAREN)) {
+            return false
+        }
+
+        var depth = 0
+        var offset = 0
+        while (true) {
+            val token = peek(offset)
+            when (token.type) {
+                TokenType.LPAREN -> depth += 1
+                TokenType.RPAREN -> {
+                    depth -= 1
+                    if (depth == 0) {
+                        return peek(offset + 1).type == TokenType.DOT
+                    }
+                }
+                TokenType.EOF -> return false
+                else -> Unit
+            }
+            offset += 1
+        }
+    }
+
+    private fun parseLambdaParameterGroup(diagnostics: MutableList<Diagnostic>): MutableList<LambdaParameter> {
+        val parameters = mutableListOf<LambdaParameter>()
+        consume(TokenType.LPAREN, "Expected '(' after lambda", diagnostics)
+
+        if (check(TokenType.RPAREN)) {
+            diagnostics.add(Diagnostic("Expected lambda parameter", peek().line, peek().column))
+            advance()
+            return parameters
+        }
+
+        parameters += parseLambdaParameterInGroup(diagnostics)
+        while (match(TokenType.COMMA)) {
+            parameters += parseLambdaParameterInGroup(diagnostics)
+        }
+
+        consume(TokenType.RPAREN, "Expected ')' after lambda parameters", diagnostics)
+        return parameters
+    }
+
+    private fun parseLambdaParameterInGroup(diagnostics: MutableList<Diagnostic>): LambdaParameter {
+        if (match(TokenType.LPAREN)) {
+            val identifier = consume(TokenType.IDENT, "Expected identifier in lambda binder", diagnostics)
+            val parameterType = if (match(TokenType.COLON)) {
+                parseExpression(diagnostics)
+            } else {
+                null
+            }
+            consume(TokenType.RPAREN, "Expected ')' after lambda binder", diagnostics)
+            return LambdaParameter(
+                name = identifier.text.ifBlank { "_" },
+                span = TextSpan(identifier.startOffset, identifier.endOffset),
+                type = parameterType,
+            )
+        }
+
+        val identifier = consume(TokenType.IDENT, "Expected identifier in lambda parameters", diagnostics)
+        val parameterType = if (match(TokenType.COLON)) {
+            parseExpression(diagnostics)
+        } else {
+            null
+        }
+        return LambdaParameter(
+            name = identifier.text.ifBlank { "_" },
+            span = TextSpan(identifier.startOffset, identifier.endOffset),
+            type = parameterType,
+        )
+    }
+
+    private fun parseLambdaParameter(diagnostics: MutableList<Diagnostic>): LambdaParameter {
+        if (match(TokenType.LPAREN)) {
+            val identifier = consume(TokenType.IDENT, "Expected identifier in lambda binder", diagnostics)
+            val parameterType = if (match(TokenType.COLON)) {
+                parseExpression(diagnostics)
+            } else {
+                null
+            }
+            consume(TokenType.RPAREN, "Expected ')' after lambda binder", diagnostics)
+            return LambdaParameter(
+                name = identifier.text.ifBlank { "_" },
+                span = TextSpan(identifier.startOffset, identifier.endOffset),
+                type = parameterType,
+            )
+        }
+
+        val identifier = consume(TokenType.IDENT, "Expected identifier after '\\'", diagnostics)
+        return LambdaParameter(
+            name = identifier.text.ifBlank { "_" },
+            span = TextSpan(identifier.startOffset, identifier.endOffset),
+            type = null,
+        )
     }
 
     private fun parseApplication(diagnostics: MutableList<Diagnostic>): Term {
@@ -494,6 +621,16 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun peekInfixCandidate(): InfixCandidate? {
+        if (check(TokenType.COLON)) {
+            val token = peek()
+            return InfixCandidate(
+                operatorToken = token,
+                precedence = TYPE_ANNOTATION_PRECEDENCE,
+                associativity = InfixAssociativity.RIGHT,
+                tokenCount = 1,
+            )
+        }
+
         if (check(TokenType.BACKTICK)) {
             val operator = peek(1)
             val closing = peek(2)
@@ -539,6 +676,9 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun makeInfixApplication(operatorToken: Token, left: Term, right: Term): Term {
+        if (operatorToken.type == TokenType.COLON) {
+            return Term.Typed(left, right)
+        }
         val operatorSpan = TextSpan(operatorToken.startOffset, operatorToken.endOffset)
         val operatorTerm = when (operatorToken.type) {
             TokenType.IDENT -> Term.Variable(operatorToken.text, operatorSpan)
@@ -610,7 +750,14 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         val tokenCount: Int,
     )
 
+    private data class LambdaParameter(
+        val name: String,
+        val span: TextSpan,
+        val type: Term?,
+    )
+
     private companion object {
+        const val TYPE_ANNOTATION_PRECEDENCE: Int = 0
         const val DEFAULT_BACKTICK_PRECEDENCE: Int = 9
     }
 }
