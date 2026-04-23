@@ -31,6 +31,12 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 greenEdges = emptyList(),
             )
 
+        val selectedIndex = document.definitions.indexOf(selected).coerceAtLeast(0)
+        val knownConstantsBeforeSelected = document.definitions
+            .take(selectedIndex)
+            .map { it.name }
+            .toSet()
+
         val selectedTerm = selected.implementation ?: selected.type
         if (selectedTerm == null) {
             return VisualizationData(
@@ -48,7 +54,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             )
         }
 
-        val builder = TermGraphBuilder()
+        val builder = TermGraphBuilder(knownConstantsBeforeSelected)
         val graph = builder.build(selectedTerm)
 
         return VisualizationData(
@@ -68,9 +74,11 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
 
     private fun buildTextHighlights(document: ParsedDocument, caretOffset: Int?): List<TextHighlight> {
         val collector = SymbolCollector()
+        val knownConstants = linkedSetOf<String>()
         document.definitions.forEach { definition ->
-            definition.type?.let { collector.collect(it, linkedMapOf()) }
-            definition.implementation?.let { collector.collect(it, linkedMapOf()) }
+            definition.type?.let { collector.collect(it, linkedMapOf(), knownConstants) }
+            definition.implementation?.let { collector.collect(it, linkedMapOf(), knownConstants) }
+            knownConstants += definition.name
         }
 
         val highlights = mutableListOf<TextHighlight>()
@@ -176,11 +184,15 @@ private class SymbolCollector {
 
     private var nextBinderId: Int = 0
 
-    fun collect(term: Term, boundStacks: MutableMap<String, MutableList<Int>>) {
+    fun collect(
+        term: Term,
+        boundStacks: MutableMap<String, MutableList<Int>>,
+        knownConstants: Set<String>,
+    ) {
         when (term) {
             is Term.Application -> {
-                collect(term.function, boundStacks)
-                collect(term.argument, boundStacks)
+                collect(term.function, boundStacks, knownConstants)
+                collect(term.argument, boundStacks, knownConstants)
             }
 
             is Term.Lambda -> {
@@ -196,9 +208,9 @@ private class SymbolCollector {
                 val stack = boundStacks.getOrPut(term.parameter) { mutableListOf() }
                 stack.add(binderId)
 
-                collect(term.parameterType, boundStacks)
+                collect(term.parameterType, boundStacks, knownConstants)
 
-                collect(term.body, boundStacks)
+                collect(term.body, boundStacks, knownConstants)
 
                 if (stack.isNotEmpty()) {
                     stack.removeAt(stack.lastIndex)
@@ -218,12 +230,12 @@ private class SymbolCollector {
                 bindersById[binderId] = binderInfo
                 boundVariableSpans += term.parameterSpan
 
-                collect(term.parameterType, boundStacks)
+                collect(term.parameterType, boundStacks, knownConstants)
 
                 val stack = boundStacks.getOrPut(term.parameter) { mutableListOf() }
                 stack.add(binderId)
 
-                collect(term.body, boundStacks)
+                collect(term.body, boundStacks, knownConstants)
 
                 if (stack.isNotEmpty()) {
                     stack.removeAt(stack.lastIndex)
@@ -247,14 +259,16 @@ private class SymbolCollector {
                     if (binderId != null) {
                         bindersById[binderId]?.useSpans?.add(term.span)
                     }
+                } else if (term.name in knownConstants) {
+                    constantSpans.getOrPut(term.name) { mutableListOf() }.add(term.span)
                 } else {
                     freeVariableSpans += term.span
                 }
             }
 
             is Term.Typed -> {
-                collect(term.term, boundStacks)
-                collect(term.type, boundStacks)
+                collect(term.term, boundStacks, knownConstants)
+                collect(term.type, boundStacks, knownConstants)
             }
         }
     }
@@ -276,7 +290,7 @@ private data class BinderInfo(
     val useSpans: MutableList<TextSpan>,
 )
 
-private class TermGraphBuilder {
+private class TermGraphBuilder(private val knownConstants: Set<String>) {
     private val nodes = mutableListOf<MutableNode>()
     private val blueEdges = mutableListOf<TermEdge>()
     private val greenEdges = mutableListOf<TermEdge>()
@@ -433,6 +447,20 @@ private class TermGraphBuilder {
             }
 
             is Term.Variable -> {
+                if (term.name in knownConstants) {
+                    val label = SymbolDisplay.displayName(term.name)
+                    return addNode(
+                        type = TermNodeType.CONST,
+                        label = label,
+                        width = maxOf(48.0, 22.0 + label.length * 9.0),
+                        height = 48.0,
+                        blueInputCount = 1,
+                        blueOutputCount = 0,
+                        greenInputCount = 0,
+                        greenOutputCount = 0,
+                    ).id
+                }
+
                 val node = addNode(
                     type = TermNodeType.VAR,
                     label = term.name,
