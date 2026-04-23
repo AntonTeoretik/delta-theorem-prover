@@ -10,16 +10,19 @@ import core.model.TextSpan
 import core.model.TermNode
 import core.model.TermNodeType
 import core.model.VisualizationData
+import core.typecheck.TypeChecker
 
 class SimpleVisualizationEvaluator : VisualizationEvaluator {
     override fun evaluate(document: ParsedDocument, selectedDefinitionName: String?, caretOffset: Int?): VisualizationData {
+        val typeDiagnostics = TypeChecker(document).checkProgram()
+        val allDiagnostics = document.diagnostics + typeDiagnostics
         val definitionNames = document.definitions.map { it.name }
         val textHighlights = buildTextHighlights(document, caretOffset)
         val selected = document.definitions.firstOrNull { it.name == selectedDefinitionName }
             ?: document.definitions.firstOrNull()
             ?: return VisualizationData(
                 sourceText = document.sourceText,
-                diagnostics = document.diagnostics,
+                diagnostics = allDiagnostics,
                 textHighlights = textHighlights,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
@@ -41,7 +44,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         if (selectedTerm == null) {
             return VisualizationData(
                 sourceText = document.sourceText,
-                diagnostics = document.diagnostics,
+                diagnostics = allDiagnostics,
                 textHighlights = textHighlights,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
@@ -59,7 +62,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
 
         return VisualizationData(
             sourceText = document.sourceText,
-            diagnostics = document.diagnostics,
+            diagnostics = allDiagnostics,
             textHighlights = textHighlights,
             symbolReplacements = SymbolDisplay.symbolReplacements,
             infixDeclarations = document.infixDeclarations,
