@@ -4,11 +4,12 @@ Minimal standalone desktop skeleton for future mini theorem prover.
 
 Current end-to-end flow:
 
-1. User types text in Web editor (left pane inside JCEF).
-2. `app-webui` sends source text to host bridge.
-3. `app-core` builds simple visualization model from text.
-4. `app-host` sends model back to web UI.
-5. `app-webui` redraws canvas (right pane).
+1. User edits source text in the Web editor (left pane inside JCEF).
+2. `app-webui` sends source text and caret offset to host bridge.
+3. `app-host` calls `app-core` pipeline (lexer -> parser -> evaluator).
+4. `app-core` returns diagnostics, highlights, symbol map, and graph payload.
+5. `app-host` sends payload back to `app-webui`.
+6. `app-webui` updates editor highlighting and redraws the graph.
 
 ## Project structure
 
@@ -16,12 +17,15 @@ Current end-to-end flow:
 root/
 ├── settings.gradle.kts
 ├── build.gradle.kts
+├── README.md
 ├── app-core/
+│   ├── build.gradle.kts
 │   └── src/main/kotlin/core/
 │       ├── model/
 │       ├── parser/
 │       └── eval/
 ├── app-host/
+│   ├── build.gradle.kts
 │   └── src/main/kotlin/app/
 │       ├── Main.kt
 │       ├── ui/
@@ -37,14 +41,43 @@ root/
 
 ## Modules
 
-- `app-core`: pure Kotlin module with pipeline (`TextParser -> Evaluator -> VisualizationData`).
-  - Future extension points: parser/AST, diagnostics, evaluator/normalizer.
+- `app-core`: pure Kotlin module with parser + AST + evaluator.
+  - Contains term syntax, infix declarations, typed terms, Pi/Meta AST, diagnostics, highlighting spans, and graph model.
 - `app-host`: Swing + JCEF desktop host.
   - Uses a single embedded JCEF surface to avoid Swing/JCEF focus conflicts.
-  - Contains browser panel and bridge (`Web -> Kotlin -> Web`).
-  - Future extension points: file open/save, menu/actions, cursor/selection sync.
+  - Contains browser panel and bridge (`Web -> Kotlin -> Web`) for text, caret, and selected definition.
 - `app-webui`: static HTML/CSS/JS renderer loaded inside JCEF.
-  - Future extension points: richer canvas renderer, graph/tree renderer, syntax-aware modes.
+  - Contains editor overlay/highlighting, slash symbol input mode, compact graph view, and canvas renderer.
+
+## Data flow
+
+Main flow (`text -> parse -> graph`):
+
+1. User types in `textarea`.
+2. `app-webui` sends `editorTextChanged:<text>`.
+3. `app-host` stores latest text and runs `CorePipeline.buildVisualization(...)`.
+4. `app-core` returns:
+   - diagnostics,
+   - text highlights,
+   - symbol replacements,
+   - definition list,
+   - selected-definition graph (`nodes`, `blueEdges`, `greenEdges`).
+5. `app-host` sends payload via `renderFromHost(...)`.
+6. `app-webui` updates editor overlay and graph.
+
+Caret flow (`cursor -> semantic highlight`):
+
+1. `app-webui` sends `editorCaretMoved:<offset>`.
+2. `app-host` re-evaluates with current caret offset.
+3. `app-core` marks active references (for constants/bound vars).
+4. `app-webui` refreshes highlight spans.
+
+Definition selection flow:
+
+1. User clicks a definition chip.
+2. `app-webui` sends `selectDefinition:<name>`.
+3. `app-host` rebuilds payload for that definition.
+4. `app-webui` redraws graph.
 
 ## Requirements
 
@@ -93,35 +126,45 @@ Windows:
 scripts\run-all.bat
 ```
 
-## Term syntax (current MVP)
+## Syntax (current)
 
-Left editor accepts a single term:
-
-- variable: `x`
-- constant: `$c`
-- lambda: `\x . t`
-- application: `t(a)`
-- multi-arg application: `t(a, b, c)` (parsed as `(((t(a))(b))(c))`)
-
-You can also write a program with definitions:
+Program form:
 
 ```text
-$name1 := term;
-$name2 := term2;
+name [: term] [:= term];
 ```
 
-When definitions are present, the right panel shows a horizontal list of name bricks. Click any name to display its term graph.
+- both type and implementation are optional.
+- a name is treated as a constant when it is defined earlier in the program.
 
-Example:
+Term features:
 
-```text
-\x . ($c(y, x))
-```
+- variables and application: `t(u, v)`
+- lambda: `λx.t`, `λ(x:A).t`, `λx,y.t`
+- typed term: `t : T` (right-associative)
+- Pi sugar:
+  - `A → B`
+  - `(a : A) → B`
+  - `∀a. B`
+  - `∀(a:A),(b:B),c.T`
+- infix declarations:
+  - `infixl 6 +;`
+  - `infixr 5 \to;`
+- backtick infix use, for example:
+  - `x \`f\` y`
 
-Visualization shows node graph with:
+Slash symbol input mode in editor:
 
-- blue edges for term tree structure
-- green edges for binder links (`lambda` bindings and free vars from `ROOT`)
+- press `\` to enter special mode,
+- type token (`to`, `a`, `mN`, ...),
+- press space/tab to commit into a single symbol (`→`, `α`, `ℕ`, ...).
+
+Graph visualization:
+
+- `APP`, `TYPE(:)`, `LAMBDA`, `PI`, `META(?mN)`, `VAR`, `CONST`, `ROOT` nodes.
+- blue edges = term structure.
+- green edges = binder links.
+- compact mode merges APP/LAMBDA/PI chains for denser layout.
 
 ## How to extend toward theorem prover
 
