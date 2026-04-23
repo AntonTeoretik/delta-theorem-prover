@@ -156,13 +156,15 @@ function enterSlashMode(start) {
 
 function refreshSlashModeForSelection() {
   if (!overlayInputMode.active) {
-    return;
+    return false;
   }
   const start = editorInput.selectionStart ?? 0;
   const end = editorInput.selectionEnd ?? start;
   if (start !== end || start !== overlayInputMode.start) {
     resetSlashMode();
+    return true;
   }
+  return false;
 }
 
 function setProjection(rawToDisplay, rawStart, rawLength, displayStart, displayLength, mode = 'scaled') {
@@ -269,10 +271,6 @@ function buildEditorHighlightHtml(text, spans) {
   const projection = buildOverlayProjection(sourceText);
   lastProjection = projection;
   const overlayText = projection.displayText;
-  if (sourceText.length === 0) {
-    return '\n';
-  }
-
   const validSpans = (spans || [])
     .map((span) => {
       const start = Number.isFinite(span.startOffset) ? Math.max(0, Math.min(sourceText.length, span.startOffset)) : 0;
@@ -620,26 +618,30 @@ editorInput.addEventListener('keydown', (event) => {
 
 editorInput.addEventListener('scroll', syncEditorOverlayScroll);
 editorInput.addEventListener('keyup', () => {
-  refreshSlashModeForSelection();
-  renderEditorWithCurrentHighlights();
+  if (refreshSlashModeForSelection()) {
+    renderEditorWithCurrentHighlights();
+  }
   notifyCaretMoved();
   updateEditorCaretOverlay();
 });
 editorInput.addEventListener('click', () => {
-  refreshSlashModeForSelection();
-  renderEditorWithCurrentHighlights();
+  if (refreshSlashModeForSelection()) {
+    renderEditorWithCurrentHighlights();
+  }
   notifyCaretMoved();
   updateEditorCaretOverlay();
 });
 editorInput.addEventListener('select', () => {
-  refreshSlashModeForSelection();
-  renderEditorWithCurrentHighlights();
+  if (refreshSlashModeForSelection()) {
+    renderEditorWithCurrentHighlights();
+  }
   notifyCaretMoved();
   updateEditorCaretOverlay();
 });
 editorInput.addEventListener('focus', () => {
-  refreshSlashModeForSelection();
-  renderEditorWithCurrentHighlights();
+  if (refreshSlashModeForSelection()) {
+    renderEditorWithCurrentHighlights();
+  }
   notifyCaretMoved();
   updateEditorCaretOverlay();
 });
@@ -648,8 +650,9 @@ editorInput.addEventListener('blur', () => {
 });
 document.addEventListener('selectionchange', () => {
   if (document.activeElement === editorInput) {
-    refreshSlashModeForSelection();
-    renderEditorWithCurrentHighlights();
+    if (refreshSlashModeForSelection()) {
+      renderEditorWithCurrentHighlights();
+    }
     notifyCaretMoved();
     updateEditorCaretOverlay();
   }
