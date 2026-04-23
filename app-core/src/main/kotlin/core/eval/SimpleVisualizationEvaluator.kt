@@ -196,9 +196,7 @@ private class SymbolCollector {
                 val stack = boundStacks.getOrPut(term.parameter) { mutableListOf() }
                 stack.add(binderId)
 
-                term.parameterType?.let { parameterType ->
-                    collect(parameterType, boundStacks)
-                }
+                collect(term.parameterType, boundStacks)
 
                 collect(term.body, boundStacks)
 
@@ -209,6 +207,33 @@ private class SymbolCollector {
                     boundStacks.remove(term.parameter)
                 }
             }
+
+            is Term.Pi -> {
+                val binderId = nextBinderId++
+                val binderInfo = BinderInfo(
+                    id = binderId,
+                    declarationSpan = term.parameterSpan,
+                    useSpans = mutableListOf(),
+                )
+                bindersById[binderId] = binderInfo
+                boundVariableSpans += term.parameterSpan
+
+                collect(term.parameterType, boundStacks)
+
+                val stack = boundStacks.getOrPut(term.parameter) { mutableListOf() }
+                stack.add(binderId)
+
+                collect(term.body, boundStacks)
+
+                if (stack.isNotEmpty()) {
+                    stack.removeAt(stack.lastIndex)
+                }
+                if (stack.isEmpty()) {
+                    boundStacks.remove(term.parameter)
+                }
+            }
+
+            is Term.Meta -> Unit
 
             is Term.Constant -> {
                 constantSpans.getOrPut(term.name) { mutableListOf() }.add(term.span)
@@ -319,10 +344,13 @@ private class TermGraphBuilder {
                     width = 48.0,
                     height = 48.0,
                     blueInputCount = 1,
-                    blueOutputCount = 1,
+                    blueOutputCount = 2,
                     greenInputCount = 0,
                     greenOutputCount = 1,
                 )
+
+                val parameterType = addTerm(term.parameterType, scope)
+                addBlueEdge(node.id, parameterType, fromPort = 0, toPort = 0)
 
                 val binderRef = BinderRef(nodeId = node.id, port = 0)
 
@@ -330,7 +358,38 @@ private class TermGraphBuilder {
                 extendedScope[term.parameter] = binderRef
 
                 val body = addTerm(term.body, extendedScope)
-                addBlueEdge(node.id, body, fromPort = 0, toPort = 0)
+                addBlueEdge(node.id, body, fromPort = 1, toPort = 0)
+
+                if (binderRef.usageCount == 0) {
+                    node.greenOutputCount = 0
+                    node.width = 48.0
+                } else {
+                    node.width = maxOf(48.0, 22.0 + term.parameter.length * 9.0)
+                }
+                node.id
+            }
+
+            is Term.Pi -> {
+                val node = addNode(
+                    type = TermNodeType.PI,
+                    label = term.parameter,
+                    width = 48.0,
+                    height = 48.0,
+                    blueInputCount = 1,
+                    blueOutputCount = 2,
+                    greenInputCount = 0,
+                    greenOutputCount = 1,
+                )
+
+                val parameterType = addTerm(term.parameterType, scope)
+                addBlueEdge(node.id, parameterType, fromPort = 0, toPort = 0)
+
+                val binderRef = BinderRef(nodeId = node.id, port = 0)
+                val extendedScope = scope.toMutableMap()
+                extendedScope[term.parameter] = binderRef
+
+                val body = addTerm(term.body, extendedScope)
+                addBlueEdge(node.id, body, fromPort = 1, toPort = 0)
 
                 if (binderRef.usageCount == 0) {
                     node.greenOutputCount = 0
@@ -394,6 +453,20 @@ private class TermGraphBuilder {
                     addGreenEdge(rootNodeId, node.id, fromPort = rootPort, toPort = 0)
                 }
                 node.id
+            }
+
+            is Term.Meta -> {
+                val label = "?m${term.id}"
+                addNode(
+                    type = TermNodeType.META,
+                    label = label,
+                    width = maxOf(48.0, 22.0 + label.length * 9.0),
+                    height = 48.0,
+                    blueInputCount = 1,
+                    blueOutputCount = 0,
+                    greenInputCount = 0,
+                    greenOutputCount = 0,
+                ).id
             }
         }
     }

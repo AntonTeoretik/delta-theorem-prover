@@ -5,6 +5,7 @@ import core.model.Diagnostic
 import core.model.InfixAssociativity
 import core.model.InfixDeclaration
 import core.model.ParsedDocument
+import core.model.SymbolDisplay
 import core.model.Term
 import core.model.TextSpan
 
@@ -35,6 +36,8 @@ private enum class TokenType {
     SYMBOLIC_IDENT,
     INTEGER,
     LAMBDA,
+    FORALL,
+    ARROW,
     DOT,
     LPAREN,
     RPAREN,
@@ -77,6 +80,9 @@ private class TermLexer(private val source: String) {
                 ch.isWhitespace() -> advance(ch)
                 ch == '\\' -> tokens.add(readBackslashPrefixed())
                 ch == 'λ' -> tokens.add(singleToken(TokenType.LAMBDA, "λ"))
+                ch == '∀' -> tokens.add(singleToken(TokenType.FORALL, "∀"))
+                ch == '→' -> tokens.add(singleToken(TokenType.ARROW, "→"))
+                ch.isCommittedSymbolConstant() -> tokens.add(singleToken(TokenType.SYMBOLIC_IDENT, ch.toString()))
                 ch == '.' -> tokens.add(singleToken(TokenType.DOT, "."))
                 ch == '(' -> tokens.add(singleToken(TokenType.LPAREN, "("))
                 ch == ')' -> tokens.add(singleToken(TokenType.RPAREN, ")"))
@@ -142,6 +148,28 @@ private class TermLexer(private val source: String) {
 
         if (buffer.isEmpty()) {
             diagnostics.add(Diagnostic("Expected constant name after '\\'", startLine, startColumn))
+        }
+
+        if (buffer.toString() == "to") {
+            return Token(
+                type = TokenType.ARROW,
+                text = "\\to",
+                line = startLine,
+                column = startColumn,
+                startOffset = startOffset,
+                endOffset = index,
+            )
+        }
+
+        if (buffer.toString() == "forall") {
+            return Token(
+                type = TokenType.FORALL,
+                text = "\\forall",
+                line = startLine,
+                column = startColumn,
+                startOffset = startOffset,
+                endOffset = index,
+            )
         }
 
         return Token(
@@ -260,10 +288,23 @@ private class TermLexer(private val source: String) {
     }
 
     private fun Char.isSymbolicIdentifierPart(): Boolean = isSymbolicIdentifierStart()
+
+    private fun Char.isCommittedSymbolConstant(): Boolean {
+        return this in COMMITTED_SYMBOL_CONSTANTS
+    }
+
+    private companion object {
+        val COMMITTED_SYMBOL_CONSTANTS: Set<Char> = SymbolDisplay.symbolReplacements
+            .values
+            .filter { it.length == 1 }
+            .map { it.single() }
+            .toSet()
+    }
 }
 
 private class TermSyntaxParser(private val tokens: List<Token>) {
     private var cursor: Int = 0
+    private var nextMetaId: Int = 0
 
     private val infixDeclarations = mutableListOf<InfixDeclaration>()
     private val infixByName = linkedMapOf<String, InfixDeclaration>()
@@ -410,10 +451,10 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun parseExpression(diagnostics: MutableList<Diagnostic>, minPrecedence: Int = 0): Term {
-        var expression = if (match(TokenType.LAMBDA)) {
-            parseLambdaExpression(diagnostics)
-        } else {
-            parseApplication(diagnostics)
+        var expression = when {
+            match(TokenType.LAMBDA) -> parseLambdaExpression(diagnostics)
+            match(TokenType.FORALL) -> parseForallExpression(diagnostics)
+            else -> parseApplication(diagnostics)
         }
 
         while (true) {
@@ -437,7 +478,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 candidate.precedence
             }
             val rhs = parseExpression(diagnostics, rhsMinPrecedence)
-            expression = makeInfixApplication(candidate.operatorToken, expression, rhs)
+            expression = makeInfixApplication(candidate, expression, rhs)
         }
 
         return expression
@@ -459,11 +500,35 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         val body = parseExpression(diagnostics)
 
         return parameters.asReversed().fold(body) { acc, parameter ->
-            Term.Lambda(parameter.name, parameter.type, acc, parameter.span)
+            val parameterType = parameter.type ?: freshMeta(parameter.span)
+            Term.Lambda(parameter.name, parameterType, acc, parameter.span)
         }
     }
 
-    private fun isGroupedLambdaParameterListStart(): Boolean {
+    private fun parseForallExpression(diagnostics: MutableList<Diagnostic>): Term {
+        val parameters = if (isGroupedBinderListStart(TokenType.DOT)) {
+            parseBinderParameterGroup(diagnostics, "forall")
+        } else {
+            val list = mutableListOf<LambdaParameter>()
+            list += parseForallParameter(diagnostics)
+            while (match(TokenType.COMMA)) {
+                list += parseForallParameter(diagnostics)
+            }
+            list
+        }
+
+        consume(TokenType.DOT, "Expected '.' after forall parameter", diagnostics)
+        val body = parseExpression(diagnostics)
+
+        return parameters.asReversed().fold(body) { acc, parameter ->
+            val parameterType = parameter.type ?: freshMeta(parameter.span)
+            Term.Pi(parameter.name, parameterType, acc, parameter.span)
+        }
+    }
+
+    private fun isGroupedLambdaParameterListStart(): Boolean = isGroupedBinderListStart(TokenType.DOT)
+
+    private fun isGroupedBinderListStart(terminator: TokenType): Boolean {
         if (!check(TokenType.LPAREN)) {
             return false
         }
@@ -477,7 +542,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 TokenType.RPAREN -> {
                     depth -= 1
                     if (depth == 0) {
-                        return peek(offset + 1).type == TokenType.DOT
+                        return peek(offset + 1).type == terminator
                     }
                 }
                 TokenType.EOF -> return false
@@ -488,11 +553,18 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun parseLambdaParameterGroup(diagnostics: MutableList<Diagnostic>): MutableList<LambdaParameter> {
+        return parseBinderParameterGroup(diagnostics, "lambda")
+    }
+
+    private fun parseBinderParameterGroup(
+        diagnostics: MutableList<Diagnostic>,
+        kind: String,
+    ): MutableList<LambdaParameter> {
         val parameters = mutableListOf<LambdaParameter>()
-        consume(TokenType.LPAREN, "Expected '(' after lambda", diagnostics)
+        consume(TokenType.LPAREN, "Expected '(' after $kind", diagnostics)
 
         if (check(TokenType.RPAREN)) {
-            diagnostics.add(Diagnostic("Expected lambda parameter", peek().line, peek().column))
+            diagnostics.add(Diagnostic("Expected $kind parameter", peek().line, peek().column))
             advance()
             return parameters
         }
@@ -502,8 +574,37 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             parameters += parseLambdaParameterInGroup(diagnostics)
         }
 
-        consume(TokenType.RPAREN, "Expected ')' after lambda parameters", diagnostics)
+        consume(TokenType.RPAREN, "Expected ')' after $kind parameters", diagnostics)
         return parameters
+    }
+
+    private fun parseForallParameter(diagnostics: MutableList<Diagnostic>): LambdaParameter {
+        if (match(TokenType.LPAREN)) {
+            val identifier = consume(TokenType.IDENT, "Expected identifier in forall binder", diagnostics)
+            val parameterType = if (match(TokenType.COLON)) {
+                parseExpression(diagnostics)
+            } else {
+                null
+            }
+            consume(TokenType.RPAREN, "Expected ')' after forall binder", diagnostics)
+            return LambdaParameter(
+                name = identifier.text.ifBlank { "_" },
+                span = TextSpan(identifier.startOffset, identifier.endOffset),
+                type = parameterType,
+            )
+        }
+
+        val identifier = consume(TokenType.IDENT, "Expected identifier after '∀'", diagnostics)
+        val parameterType = if (match(TokenType.COLON)) {
+            parseExpression(diagnostics)
+        } else {
+            null
+        }
+        return LambdaParameter(
+            name = identifier.text.ifBlank { "_" },
+            span = TextSpan(identifier.startOffset, identifier.endOffset),
+            type = parameterType,
+        )
     }
 
     private fun parseLambdaParameterInGroup(diagnostics: MutableList<Diagnostic>): LambdaParameter {
@@ -624,8 +725,20 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         if (check(TokenType.COLON)) {
             val token = peek()
             return InfixCandidate(
+                kind = InfixKind.TYPE_ANNOTATION,
                 operatorToken = token,
                 precedence = TYPE_ANNOTATION_PRECEDENCE,
+                associativity = InfixAssociativity.RIGHT,
+                tokenCount = 1,
+            )
+        }
+
+        if (check(TokenType.ARROW)) {
+            val token = peek()
+            return InfixCandidate(
+                kind = InfixKind.PI_ARROW,
+                operatorToken = token,
+                precedence = PI_ARROW_PRECEDENCE,
                 associativity = InfixAssociativity.RIGHT,
                 tokenCount = 1,
             )
@@ -639,6 +752,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             }
             val declaration = infixByName[operator.text]
             return InfixCandidate(
+                kind = InfixKind.OPERATOR,
                 operatorToken = operator,
                 precedence = declaration?.precedence ?: DEFAULT_BACKTICK_PRECEDENCE,
                 associativity = declaration?.associativity ?: InfixAssociativity.LEFT,
@@ -652,6 +766,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
         val declaration = infixByName[token.text] ?: return null
         return InfixCandidate(
+            kind = InfixKind.OPERATOR,
             operatorToken = token,
             precedence = declaration.precedence,
             associativity = declaration.associativity,
@@ -675,10 +790,14 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
     }
 
-    private fun makeInfixApplication(operatorToken: Token, left: Term, right: Term): Term {
-        if (operatorToken.type == TokenType.COLON) {
+    private fun makeInfixApplication(candidate: InfixCandidate, left: Term, right: Term): Term {
+        if (candidate.kind == InfixKind.TYPE_ANNOTATION) {
             return Term.Typed(left, right)
         }
+        if (candidate.kind == InfixKind.PI_ARROW) {
+            return makePiFromArrow(left, right, candidate.operatorToken)
+        }
+        val operatorToken = candidate.operatorToken
         val operatorSpan = TextSpan(operatorToken.startOffset, operatorToken.endOffset)
         val operatorTerm = when (operatorToken.type) {
             TokenType.IDENT -> Term.Variable(operatorToken.text, operatorSpan)
@@ -686,6 +805,25 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             else -> Term.Variable(operatorToken.text, operatorSpan)
         }
         return Term.Application(Term.Application(operatorTerm, left), right)
+    }
+
+    private fun makePiFromArrow(left: Term, right: Term, arrowToken: Token): Term {
+        if (left is Term.Typed && left.term is Term.Variable) {
+            val variable = left.term
+            return Term.Pi(
+                parameter = variable.name,
+                parameterType = left.type,
+                body = right,
+                parameterSpan = variable.span,
+            )
+        }
+
+        val syntheticSpan = TextSpan(arrowToken.startOffset, arrowToken.startOffset)
+        return Term.Pi("_", left, right, syntheticSpan)
+    }
+
+    private fun freshMeta(span: TextSpan): Term.Meta {
+        return Term.Meta(nextMetaId++, span)
     }
 
     private fun consume(type: TokenType, message: String, diagnostics: MutableList<Diagnostic>): Token {
@@ -744,11 +882,18 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     private fun previous(): Token = tokens[cursor - 1]
 
     private data class InfixCandidate(
+        val kind: InfixKind,
         val operatorToken: Token,
         val precedence: Int,
         val associativity: InfixAssociativity,
         val tokenCount: Int,
     )
+
+    private enum class InfixKind {
+        TYPE_ANNOTATION,
+        PI_ARROW,
+        OPERATOR,
+    }
 
     private data class LambdaParameter(
         val name: String,
@@ -757,7 +902,8 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     )
 
     private companion object {
-        const val TYPE_ANNOTATION_PRECEDENCE: Int = 0
+        const val PI_ARROW_PRECEDENCE: Int = 0
+        const val TYPE_ANNOTATION_PRECEDENCE: Int = 1
         const val DEFAULT_BACKTICK_PRECEDENCE: Int = 9
     }
 }

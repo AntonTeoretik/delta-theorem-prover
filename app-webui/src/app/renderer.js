@@ -25,7 +25,15 @@ function portPoint(node, side, color, index) {
   const blueCount = side === 'in' ? (node.blueInputCount || 0) : (node.blueOutputCount || 0);
   const greenCount = side === 'in' ? (node.greenInputCount || 0) : (node.greenOutputCount || 0);
   const total = Math.max(1, blueCount + greenCount);
-  const slot = color === 'blue' ? index : blueCount + index;
+  let slot = color === 'blue' ? index : blueCount + index;
+
+  if (side === 'out' && Array.isArray(node.portOrderOut) && node.portOrderOut.length > 0) {
+    const mapped = node.portOrderOut.findIndex((entry) => entry.color === color && entry.index === index);
+    if (mapped >= 0) {
+      slot = mapped;
+    }
+  }
+
   const gap = node.width / (total + 1);
   return {
     x: node.x + gap * (slot + 1),
@@ -106,6 +114,23 @@ function drawLambdaNode(ctx, node) {
     ctx.font = '11px "Segoe UI", sans-serif';
     ctx.fillText(node.label, nodeCenterX(node), node.y + node.height - 6);
   }
+}
+
+function drawPiNode(ctx, node) {
+  ctx.fillStyle = '#323841';
+  ctx.strokeStyle = '#ffb173';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.roundRect(node.x, node.y, node.width, node.height, 7);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#f3e8db';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '12px "Segoe UI", sans-serif';
+  ctx.fillText('PI', nodeCenterX(node), node.y + node.height / 2);
+  ctx.textBaseline = 'alphabetic';
 }
 
 function drawSquareNode(ctx, node, text, textColor, fillColor, borderColor) {
@@ -264,6 +289,8 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
         drawSquareNode(ctx, node, ':', '#f3e8db');
       } else if (node.type === 'LAMBDA') {
         drawLambdaNode(ctx, node);
+      } else if (node.type === 'PI') {
+        drawPiNode(ctx, node);
       } else if (node.type === 'CONST') {
         drawSquareNode(ctx, node, displayName(node.label || 'c', payload.symbolReplacements), '#ffd8b4', '#4d3528', '#ffb173');
       } else if (node.type === 'VAR') {
@@ -272,6 +299,8 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
         } else {
           drawSquareNode(ctx, node, node.label || 'x', 'rgba(170, 226, 176, 0.84)', '#2f4437', '#89d49a');
         }
+      } else if (node.type === 'META') {
+        drawSquareNode(ctx, node, node.label || `?m${node.id}`, 'rgba(170, 225, 255, 0.94)', '#2d3c49', '#78bcd9');
       }
       drawPorts(ctx, node, freeVarNodeIds.has(node.id));
     });

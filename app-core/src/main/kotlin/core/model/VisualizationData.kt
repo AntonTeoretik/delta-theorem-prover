@@ -7,6 +7,8 @@ enum class TermNodeType {
     CONST,
     VAR,
     LAMBDA,
+    PI,
+    META,
 }
 
 data class TermNode(

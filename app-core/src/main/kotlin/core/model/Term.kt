@@ -13,9 +13,21 @@ sealed interface Term {
 
     data class Lambda(
         val parameter: String,
-        val parameterType: Term?,
+        val parameterType: Term,
         val body: Term,
         val parameterSpan: TextSpan,
+    ) : Term
+
+    data class Pi(
+        val parameter: String,
+        val parameterType: Term,
+        val body: Term,
+        val parameterSpan: TextSpan,
+    ) : Term
+
+    data class Meta(
+        val id: Int,
+        val span: TextSpan,
     ) : Term
 
     data class Typed(

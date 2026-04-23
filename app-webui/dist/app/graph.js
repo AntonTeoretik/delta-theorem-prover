@@ -64,7 +64,7 @@ function layoutGraph(payload) {
   place(root.id, leftMargin, 0);
 }
 
-function compactifyLambdaChains(model) {
+function compactifyBinderChains(model, nodeType, edgePrefix) {
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const outgoingBlue = new Map();
   const incomingBlue = new Map();
@@ -91,19 +91,19 @@ function compactifyLambdaChains(model) {
   const removeNodeIds = new Set();
   const removeBlueEdgeIds = new Set();
   const edgeUpdates = [];
-  let lambdaCompactEdgeIndex = 0;
+  let compactEdgeIndex = 0;
 
   model.nodes.forEach((node) => {
-    if (node.type !== 'LAMBDA' || processed.has(node.id)) {
+    if (node.type !== nodeType || processed.has(node.id)) {
       return;
     }
 
     const incoming = incomingBlue.get(node.id) || [];
-    const hasLambdaParent = incoming.some((edge) => {
+    const hasSameParent = incoming.some((edge) => {
       const parent = nodeById.get(edge.fromNodeId);
-      return parent && parent.type === 'LAMBDA' && edge.fromPort === 0;
+      return parent && parent.type === nodeType && edge.fromPort === 1;
     });
-    if (hasLambdaParent) {
+    if (hasSameParent) {
       return;
     }
 
@@ -111,18 +111,18 @@ function compactifyLambdaChains(model) {
     let currentId = node.id;
     while (true) {
       const current = nodeById.get(currentId);
-      if (!current || current.type !== 'LAMBDA' || processed.has(currentId)) {
+      if (!current || current.type !== nodeType || processed.has(currentId)) {
         break;
       }
       chain.push(currentId);
       processed.add(currentId);
 
-      const nextEdge = firstBlueEdge(currentId, 0);
+      const nextEdge = firstBlueEdge(currentId, 1);
       if (!nextEdge) {
         break;
       }
       const nextNode = nodeById.get(nextEdge.toNodeId);
-      if (!nextNode || nextNode.type !== 'LAMBDA') {
+      if (!nextNode || nextNode.type !== nodeType) {
         break;
       }
       currentId = nextNode.id;
@@ -135,27 +135,50 @@ function compactifyLambdaChains(model) {
     const topId = chain[0];
     const deepestId = chain[chain.length - 1];
     const topNode = nodeById.get(topId);
-    const deepestBodyEdge = firstBlueEdge(deepestId, 0);
+    const deepestBodyEdge = firstBlueEdge(deepestId, 1);
     if (!topNode || !deepestBodyEdge) {
       return;
     }
 
     const chainBinders = [];
     const binderPortByNodeId = new Map();
+    const typeTargets = [];
     chain.forEach((lambdaId) => {
-      const lambdaNode = nodeById.get(lambdaId);
-      if (!lambdaNode) {
+      const binderNode = nodeById.get(lambdaId);
+      if (!binderNode) {
+        return;
+      }
+      const typeEdge = firstBlueEdge(lambdaId, 0);
+      if (!typeEdge) {
         return;
       }
       binderPortByNodeId.set(lambdaId, chainBinders.length);
-      chainBinders.push(lambdaNode.label || '_');
+      chainBinders.push(binderNode.label || '_');
+      typeTargets.push(typeEdge.toNodeId);
     });
 
+    if (chainBinders.length === 0 || typeTargets.length !== chainBinders.length) {
+      return;
+    }
+
     topNode.greenOutputCount = chainBinders.length;
+    topNode.blueOutputCount = chainBinders.length + 1;
     topNode.label = chainBinders.join(', ');
     if (topNode.label) {
-      topNode.width = Math.max(topNode.width, 24 + topNode.label.length * 7.2, 24 + topNode.greenOutputCount * 16);
+      topNode.width = Math.max(
+        topNode.width,
+        24 + topNode.label.length * 7.2,
+        24 + (topNode.blueOutputCount + topNode.greenOutputCount) * 14,
+      );
     }
+
+    const outOrder = [];
+    for (let i = 0; i < chainBinders.length; i += 1) {
+      outOrder.push({ color: 'blue', index: i });
+      outOrder.push({ color: 'green', index: i });
+    }
+    outOrder.push({ color: 'blue', index: chainBinders.length });
+    topNode.portOrderOut = outOrder;
 
     chain.forEach((lambdaId, index) => {
       const outEdges = outgoingBlue.get(lambdaId) || [];
@@ -165,11 +188,21 @@ function compactifyLambdaChains(model) {
       }
     });
 
+    typeTargets.forEach((targetId, idx) => {
+      edgeUpdates.push({
+        id: `${edgePrefix}${compactEdgeIndex++}`,
+        fromNodeId: topId,
+        toNodeId: targetId,
+        fromPort: idx,
+        toPort: 0,
+      });
+    });
+
     edgeUpdates.push({
-      id: `lb${lambdaCompactEdgeIndex++}`,
+      id: `${edgePrefix}${compactEdgeIndex++}`,
       fromNodeId: topId,
       toNodeId: deepestBodyEdge.toNodeId,
-      fromPort: 0,
+      fromPort: chainBinders.length,
       toPort: deepestBodyEdge.toPort,
     });
 
@@ -328,7 +361,8 @@ function compactify(payload, compactEnabled) {
   model.greenEdges = model.greenEdges
     .filter((edge) => !removeNodeIds.has(edge.fromNodeId) && !removeNodeIds.has(edge.toNodeId));
 
-  compactifyLambdaChains(model);
+  compactifyBinderChains(model, 'LAMBDA', 'lb');
+  compactifyBinderChains(model, 'PI', 'pb');
   layoutGraph(model);
 
   return model;
