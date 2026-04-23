@@ -28,12 +28,19 @@
           <div id="editorCaretOverlay" aria-hidden="true"></div>
         </div>
       </section>
-      <section class="canvas-wrap">
-        <div id="definitionBar" class="definition-bar"></div>
-        <canvas id="vizCanvas" width="900" height="700"></canvas>
+      <section class="graph-column">
+        <section class="canvas-wrap">
+          <div id="definitionBar" class="definition-bar"></div>
+          <canvas id="vizCanvas" width="900" height="700"></canvas>
+        </section>
+        <section class="report-wrap">
+          <h2>Report</h2>
+          <pre id="reportOutput">No diagnostics.</pre>
+        </section>
       </section>
     </section>
   </main>
+  <div id="hoverTooltip" aria-hidden="true"></div>
 
   <script>
     window.__deltaQueuedPayload = null;

@@ -2,8 +2,10 @@ const editorInput = document.getElementById('editorInput');
 const editorHighlight = document.getElementById('editorHighlight');
 const editorLayer = document.querySelector('.editor-layer');
 const editorCaretOverlay = document.getElementById('editorCaretOverlay');
+const hoverTooltip = document.getElementById('hoverTooltip');
 const canvas = document.getElementById('vizCanvas');
 const stats = document.getElementById('stats');
+const reportOutput = document.getElementById('reportOutput');
 const compactToggle = document.getElementById('compactToggle');
 const definitionBar = document.getElementById('definitionBar');
 const ctx = canvas.getContext('2d');
@@ -57,11 +59,13 @@ let lastPayload = {
   sourceText: '',
   diagnostics: [],
   textHighlights: [],
+  typeHints: [],
   symbolReplacements: {},
   definitionNames: [],
   selectedDefinitionName: null,
   freeVariableNames: [],
   nodes: [],
+  nodeTypeHints: {},
   blueEdges: [],
   greenEdges: [],
 };
@@ -70,6 +74,7 @@ let lastProjection = {
   displayText: '',
   rawToDisplay: [0],
 };
+let editorTypeHintRects = [];
 
 const BACKSLASH_TOKEN_CHAR = /[^\s]/;
 
@@ -245,6 +250,9 @@ function highlightClassFor(kind) {
   if (kind === 'CONSTANT') {
     return 'hl-constant';
   }
+  if (kind === 'TYPE_UNIVERSE') {
+    return 'hl-type-universe';
+  }
   if (kind === 'FREE_VARIABLE') {
     return 'hl-free-var';
   }
@@ -266,7 +274,7 @@ function highlightClassFor(kind) {
   return '';
 }
 
-function buildEditorHighlightHtml(text, spans) {
+function buildEditorHighlightHtml(text, spans, typeHints) {
   const sourceText = text || '';
   const projection = buildOverlayProjection(sourceText);
   lastProjection = projection;
@@ -283,6 +291,21 @@ function buildEditorHighlightHtml(text, spans) {
     })
     .filter((span) => span.end > span.start && span.kind);
 
+  const validTypeHints = (typeHints || [])
+    .map((hint) => {
+      const start = Number.isFinite(hint.startOffset) ? Math.max(0, Math.min(sourceText.length, hint.startOffset)) : 0;
+      const end = Number.isFinite(hint.endOffset) ? Math.max(start, Math.min(sourceText.length, hint.endOffset)) : start;
+      const id = typeof hint.id === 'string' ? hint.id : '';
+      const type = typeof hint.type === 'string' ? hint.type : '';
+      return {
+        id,
+        type,
+        start: projection.rawToDisplay[start],
+        end: projection.rawToDisplay[end],
+      };
+    })
+    .filter((hint) => hint.id && hint.type && hint.end > hint.start);
+
   if (projection.activeDisplayRange) {
     const activeStart = projection.activeDisplayRange.start;
     const activeEnd = projection.activeDisplayRange.end;
@@ -296,11 +319,15 @@ function buildEditorHighlightHtml(text, spans) {
   }
 
   if (validSpans.length === 0) {
-    return `${escapeHtml(overlayText)}\n`;
+    if (validTypeHints.length === 0) {
+      return `${escapeHtml(overlayText)}\n`;
+    }
   }
 
   const starts = new Map();
   const ends = new Map();
+  const hintStarts = new Map();
+  const hintEnds = new Map();
   const points = new Set([0, overlayText.length]);
 
   validSpans.forEach((span) => {
@@ -318,9 +345,26 @@ function buildEditorHighlightHtml(text, spans) {
     points.add(span.end);
   });
 
+  validTypeHints.forEach((hint) => {
+    if (!hintStarts.has(hint.start)) {
+      hintStarts.set(hint.start, []);
+    }
+    hintStarts.get(hint.start).push(hint.id);
+
+    if (!hintEnds.has(hint.end)) {
+      hintEnds.set(hint.end, []);
+    }
+    hintEnds.get(hint.end).push(hint.id);
+
+    points.add(hint.start);
+    points.add(hint.end);
+  });
+
   const sortedPoints = [...points].sort((a, b) => a - b);
   const active = new Map();
+  const activeHintIds = new Set();
   let result = '';
+  let hintAnchorIndex = 0;
 
   for (let i = 0; i < sortedPoints.length - 1; i += 1) {
     const point = sortedPoints[i];
@@ -339,6 +383,14 @@ function buildEditorHighlightHtml(text, spans) {
       active.set(kind, (active.get(kind) || 0) + 1);
     });
 
+    (hintEnds.get(point) || []).forEach((hintId) => {
+      activeHintIds.delete(hintId);
+    });
+
+    (hintStarts.get(point) || []).forEach((hintId) => {
+      activeHintIds.add(hintId);
+    });
+
     if (nextPoint <= point) {
       continue;
     }
@@ -348,15 +400,95 @@ function buildEditorHighlightHtml(text, spans) {
       continue;
     }
 
-    if (active.size === 0) {
+    if (active.size === 0 && activeHintIds.size === 0) {
       result += segment;
     } else {
       const className = [...active.keys()].sort().join(' ');
-      result += `<span class="${className}">${segment}</span>`;
+      const hintIds = [...activeHintIds].sort();
+      const hintAttr = hintIds.length > 0 ? ` data-type-hint-ids="${hintIds.join(',')}"` : '';
+      const anchorAttr = hintIds.length > 0 ? ` id="type-hint-anchor-${hintAnchorIndex++}"` : '';
+      if (className) {
+        result += `<span class="${className}"${hintAttr}${anchorAttr}>${segment}</span>`;
+      } else {
+        result += `<span${hintAttr}${anchorAttr}>${segment}</span>`;
+      }
     }
   }
 
   return `${result}\n`;
+}
+
+function collectEditorTypeHintRects(typeHints) {
+  const hintsById = new Map((typeHints || [])
+    .filter((hint) => hint && typeof hint.id === 'string' && typeof hint.type === 'string')
+    .map((hint) => [hint.id, hint.type]));
+  const spans = editorHighlight.querySelectorAll('[data-type-hint-ids]');
+  const nextRects = [];
+
+  spans.forEach((span) => {
+    const idsRaw = span.getAttribute('data-type-hint-ids') || '';
+    const ids = idsRaw.split(',').map((value) => value.trim()).filter(Boolean);
+    if (ids.length === 0) {
+      return;
+    }
+
+    const hintId = ids[0];
+    const hintType = hintsById.get(hintId);
+    if (!hintType) {
+      return;
+    }
+
+    const rects = span.getClientRects();
+    for (let i = 0; i < rects.length; i += 1) {
+      const rect = rects[i];
+      if (rect.width <= 0 || rect.height <= 0) {
+        continue;
+      }
+      nextRects.push({
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        type: hintType,
+      });
+    }
+  });
+
+  editorTypeHintRects = nextRects;
+}
+
+function positionTooltip(clientX, clientY) {
+  const margin = 10;
+  const offset = 14;
+  let left = clientX + offset;
+  let top = clientY + offset;
+
+  const rect = hoverTooltip.getBoundingClientRect();
+  if (left + rect.width > window.innerWidth - margin) {
+    left = clientX - rect.width - offset;
+  }
+  if (top + rect.height > window.innerHeight - margin) {
+    top = clientY - rect.height - offset;
+  }
+  left = Math.max(margin, left);
+  top = Math.max(margin, top);
+
+  hoverTooltip.style.left = `${left}px`;
+  hoverTooltip.style.top = `${top}px`;
+}
+
+function showTooltip(typeText, clientX, clientY) {
+  if (!typeText) {
+    hoverTooltip.style.display = 'none';
+    return;
+  }
+  hoverTooltip.textContent = typeText;
+  hoverTooltip.style.display = 'block';
+  positionTooltip(clientX, clientY);
+}
+
+function hideTooltip() {
+  hoverTooltip.style.display = 'none';
 }
 
 function updateEditorCaretOverlay() {
@@ -406,13 +538,16 @@ function updateEditorCaretOverlay() {
 function syncEditorOverlayScroll() {
   editorHighlight.style.transform = `translate(${-editorInput.scrollLeft}px, ${-editorInput.scrollTop}px)`;
   updateEditorCaretOverlay();
+  collectEditorTypeHintRects(lastPayload?.typeHints || []);
 }
 
 function renderEditorHighlight(payload) {
   const sourceText = typeof payload?.sourceText === 'string' ? payload.sourceText : editorInput.value;
   const highlights = payload?.textHighlights || [];
-  editorHighlight.innerHTML = buildEditorHighlightHtml(sourceText, highlights);
+  const typeHints = payload?.typeHints || [];
+  editorHighlight.innerHTML = buildEditorHighlightHtml(sourceText, highlights, typeHints);
   syncEditorOverlayScroll();
+  collectEditorTypeHintRects(typeHints);
   updateEditorCaretOverlay();
 }
 
@@ -420,6 +555,7 @@ function renderEditorWithCurrentHighlights() {
   renderEditorHighlight({
     sourceText: editorInput.value,
     textHighlights: lastPayload?.textHighlights || [],
+    typeHints: lastPayload?.typeHints || [],
   });
 }
 
@@ -471,11 +607,49 @@ function renderCurrent(resetView) {
   lastPayload.symbolReplacements = activeSymbolReplacements;
   renderedPayload = compactifyGraph(lastPayload, compactToggle.checked);
   renderDefinitionBarFn(definitionBar, renderedPayload, notifyHostDefinitionSelectedFn);
+  renderDiagnosticsReport(renderedPayload);
 
   if (resetView) {
     renderer.fitToContent(renderedPayload);
   }
   renderer.draw(renderedPayload);
+}
+
+function findEditorTypeHintAt(clientX, clientY) {
+  for (let i = editorTypeHintRects.length - 1; i >= 0; i -= 1) {
+    const rect = editorTypeHintRects[i];
+    if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+      return rect.type;
+    }
+  }
+  return null;
+}
+
+function findNodeTypeHintAtCanvasPoint(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const world = renderer.screenToWorld(x, y);
+  const nodes = renderedPayload?.nodes || [];
+  for (let i = nodes.length - 1; i >= 0; i -= 1) {
+    const node = nodes[i];
+    if (world.x >= node.x && world.x <= node.x + node.width && world.y >= node.y && world.y <= node.y + node.height) {
+      return renderedPayload?.nodeTypeHints?.[node.id] || null;
+    }
+  }
+  return null;
+}
+
+function renderDiagnosticsReport(payload) {
+  const diagnostics = payload?.diagnostics || [];
+  if (diagnostics.length === 0) {
+    reportOutput.textContent = 'No diagnostics.';
+    return;
+  }
+
+  reportOutput.textContent = diagnostics
+    .map((diag, index) => `${index + 1}. [${diag.line}:${diag.column}] ${diag.message}`)
+    .join('\n');
 }
 
 window.renderFromHost = (payload) => {
@@ -648,6 +822,19 @@ editorInput.addEventListener('focus', () => {
 editorInput.addEventListener('blur', () => {
   editorCaretOverlay.style.display = 'none';
 });
+
+editorLayer.addEventListener('mousemove', (event) => {
+  const hint = findEditorTypeHintAt(event.clientX, event.clientY);
+  if (!hint) {
+    hideTooltip();
+    return;
+  }
+  showTooltip(hint, event.clientX, event.clientY);
+});
+
+editorLayer.addEventListener('mouseleave', () => {
+  hideTooltip();
+});
 document.addEventListener('selectionchange', () => {
   if (document.activeElement === editorInput) {
     if (refreshSlashModeForSelection()) {
@@ -664,6 +851,8 @@ compactToggle.addEventListener('change', () => {
 
 window.addEventListener('resize', () => {
   renderer.draw(renderedPayload);
+  collectEditorTypeHintRects(lastPayload?.typeHints || []);
+  hideTooltip();
 });
 
 canvas.addEventListener('wheel', (event) => {
@@ -692,6 +881,19 @@ canvas.addEventListener('mousedown', (event) => {
   view.lastX = event.clientX;
   view.lastY = event.clientY;
   canvas.style.cursor = 'grabbing';
+});
+
+canvas.addEventListener('mousemove', (event) => {
+  const hint = findNodeTypeHintAtCanvasPoint(event.clientX, event.clientY);
+  if (!hint) {
+    hideTooltip();
+    return;
+  }
+  showTooltip(hint, event.clientX, event.clientY);
+});
+
+canvas.addEventListener('mouseleave', () => {
+  hideTooltip();
 });
 
 window.addEventListener('mousemove', (event) => {

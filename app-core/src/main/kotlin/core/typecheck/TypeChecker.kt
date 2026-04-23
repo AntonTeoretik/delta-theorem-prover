@@ -5,22 +5,38 @@ import core.model.Diagnostic
 import core.model.ParsedDocument
 import core.model.Term
 import core.model.TextSpan
+import core.model.TypeHint
+import java.util.IdentityHashMap
+
+data class TypeCheckResult(
+    val diagnostics: List<Diagnostic>,
+    val inferredTypes: Map<Term, Term>,
+    val typeHints: List<TypeHint>,
+)
 
 class TypeChecker(private val document: ParsedDocument) {
     private val diagnostics = mutableListOf<Diagnostic>()
     private val globals = linkedMapOf<String, GlobalEntry>()
     private val source = document.sourceText
+    private val inferredTypes = IdentityHashMap<Term, Term>()
+    private val typeHints = mutableListOf<TypeHint>()
+    private val typeHintKeys = linkedSetOf<String>()
+    private var nextTypeHintId: Int = 0
 
     init {
         val type = typeUniverseTerm()
         globals["Type"] = GlobalEntry(type = type, implementation = null)
     }
 
-    fun checkProgram(): List<Diagnostic> {
+    fun checkProgram(): TypeCheckResult {
         document.definitions.forEach { definition ->
             checkDefinition(definition)
         }
-        return diagnostics.toList()
+        return TypeCheckResult(
+            diagnostics = diagnostics.toList(),
+            inferredTypes = IdentityHashMap(inferredTypes),
+            typeHints = typeHints.toList(),
+        )
     }
 
     private fun checkDefinition(definition: Definition) {
@@ -54,19 +70,23 @@ class TypeChecker(private val document: ParsedDocument) {
     }
 
     private fun inferType(term: Term, locals: Map<String, Term>): Term? {
-        return when (term) {
+        val inferred = when (term) {
             is Term.Meta -> {
                 report(term.span, "Meta variables are not supported in type checking phase (?m${term.id})")
                 null
             }
 
             is Term.Variable -> {
-                locals[term.name]
+                val resolvedType = locals[term.name]
                     ?: globals[term.name]?.type
                     ?: run {
                         report(term.span, "Unknown variable or constant '${term.name}'")
                         null
                     }
+                if (resolvedType != null) {
+                    addTypeHint(term.span, resolvedType)
+                }
+                resolvedType
             }
 
             is Term.Constant -> {
@@ -91,14 +111,16 @@ class TypeChecker(private val document: ParsedDocument) {
 
             is Term.Pi -> {
                 inferType(term.parameterType, locals)
-                val extended = locals + (term.parameter to term.parameterType)
+                addTypeHint(term.parameterSpan, term.parameterType)
+                val extended = extendLocalsWithBinder(locals, term.parameter, term.parameterType, term.parameterSpan)
                 inferType(term.body, extended)
                 typeUniverseTerm()
             }
 
             is Term.Lambda -> {
                 inferType(term.parameterType, locals)
-                val extended = locals + (term.parameter to term.parameterType)
+                addTypeHint(term.parameterSpan, term.parameterType)
+                val extended = extendLocalsWithBinder(locals, term.parameter, term.parameterType, term.parameterSpan)
                 val bodyType = inferType(term.body, extended) ?: return null
                 Term.Pi(
                     parameter = term.parameter,
@@ -127,7 +149,39 @@ class TypeChecker(private val document: ParsedDocument) {
                 substitute(functionType.body, functionType.parameter, term.argument)
             }
         }
+        if (inferred != null) {
+            inferredTypes[term] = inferred
+        }
+        return inferred
     }
+
+    private fun extendLocalsWithBinder(
+        locals: Map<String, Term>,
+        name: String,
+        binderType: Term,
+        span: TextSpan,
+    ): Map<String, Term> {
+        if (isReservedLocalName(name)) {
+            report(span, "'Type' is reserved")
+            return locals
+        }
+        return locals + (name to binderType)
+    }
+
+    private fun addTypeHint(span: TextSpan, inferredType: Term) {
+        val typeText = pretty(inferredType)
+        val key = "${span.startOffset}:${span.endOffset}:$typeText"
+        if (!typeHintKeys.add(key)) {
+            return
+        }
+        typeHints += TypeHint(
+            id = "th${nextTypeHintId++}",
+            span = span,
+            type = typeText,
+        )
+    }
+
+    private fun isReservedLocalName(name: String): Boolean = name == "Type"
 
     private fun convertible(a: Term, b: Term): Boolean {
         val na = normalize(a)
@@ -305,15 +359,19 @@ class TypeChecker(private val document: ParsedDocument) {
         return Term.Variable("Type", TextSpan(0, 0))
     }
 
-    private fun pretty(term: Term): String {
-        return when (term) {
-            is Term.Meta -> "?m${term.id}"
-            is Term.Variable -> term.name
-            is Term.Constant -> term.name
-            is Term.Typed -> "(${pretty(term.term)} : ${pretty(term.type)})"
-            is Term.Application -> "(${pretty(term.function)} ${pretty(term.argument)})"
-            is Term.Lambda -> "(λ${term.parameter}. ${pretty(term.body)})"
-            is Term.Pi -> "(Π(${term.parameter} : ${pretty(term.parameterType)}). ${pretty(term.body)})"
+    private fun pretty(term: Term): String = prettyTerm(term)
+
+    companion object {
+        fun prettyTerm(term: Term): String {
+            return when (term) {
+                is Term.Meta -> "?m${term.id}"
+                is Term.Variable -> term.name
+                is Term.Constant -> term.name
+                is Term.Typed -> "(${prettyTerm(term.term)} : ${prettyTerm(term.type)})"
+                is Term.Application -> "(${prettyTerm(term.function)} ${prettyTerm(term.argument)})"
+                is Term.Lambda -> "(λ${term.parameter}. ${prettyTerm(term.body)})"
+                is Term.Pi -> "(Π(${term.parameter} : ${prettyTerm(term.parameterType)}). ${prettyTerm(term.body)})"
+            }
         }
     }
 

@@ -292,9 +292,15 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
       } else if (node.type === 'PI') {
         drawPiNode(ctx, node);
       } else if (node.type === 'CONST') {
-        drawSquareNode(ctx, node, displayName(node.label || 'c', payload.symbolReplacements), '#ffd8b4', '#4d3528', '#ffb173');
+        if ((node.label || '') === 'Type') {
+          drawSquareNode(ctx, node, 'Type', 'rgba(170, 226, 255, 0.96)', '#263b50', '#78b9ff');
+        } else {
+          drawSquareNode(ctx, node, displayName(node.label || 'c', payload.symbolReplacements), '#ffd8b4', '#4d3528', '#ffb173');
+        }
       } else if (node.type === 'VAR') {
-        if (freeVarNodeIds.has(node.id)) {
+        if ((node.label || '') === 'Type') {
+          drawSquareNode(ctx, node, 'Type', 'rgba(170, 226, 255, 0.96)', '#263b50', '#78b9ff');
+        } else if (freeVarNodeIds.has(node.id)) {
           drawSquareNode(ctx, node, node.label || 'x', 'rgba(178, 183, 255, 0.92)', '#34384d', '#9da7ff');
         } else {
           drawSquareNode(ctx, node, node.label || 'x', 'rgba(170, 226, 176, 0.84)', '#2f4437', '#89d49a');
@@ -316,17 +322,6 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
         : 'rgba(122, 205, 139, 0.38)';
       drawSpline(ctx, greenOutPoint(from, edge.fromPort), greenInPoint(to, edge.toPort), edgeColor, 34);
     });
-
-    const diagnostics = payload.diagnostics || [];
-    if (diagnostics.length > 0) {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = '#f0b27a';
-      ctx.font = '12px "Consolas", monospace';
-      diagnostics.slice(0, 5).forEach((diag, idx) => {
-        const text = `Error ${diag.line}:${diag.column} ${diag.message}`;
-        ctx.fillText(text, 14, canvas.height - 16 - idx * 16);
-      });
-    }
 
     const selected = payload.selectedDefinitionName
       ? displayName(payload.selectedDefinitionName, payload.symbolReplacements)

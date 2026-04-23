@@ -5,6 +5,7 @@ import core.model.InfixDeclaration
 import core.model.TermEdge
 import core.model.TextHighlight
 import core.model.TermNode
+import core.model.TypeHint
 import core.model.VisualizationData
 import org.cef.browser.CefBrowser
 
@@ -57,6 +58,7 @@ class WebUiBridge(private val browser: CefBrowser) {
     private fun VisualizationData.toJson(): String {
         val diagnosticsJson = diagnostics.joinToString(",") { it.toJson() }
         val textHighlightsJson = textHighlights.joinToString(",") { it.toJson() }
+        val typeHintsJson = typeHints.joinToString(",") { it.toJson() }
         val symbolReplacementsJson = symbolReplacements.entries.joinToString(",") { (from, to) ->
             "\"${escapeJson(from)}\":\"${escapeJson(to)}\""
         }
@@ -65,6 +67,9 @@ class WebUiBridge(private val browser: CefBrowser) {
         val selectedDefinitionJson = selectedDefinitionName?.let { "\"${escapeJson(it)}\"" } ?: "null"
         val freeVarsJson = freeVariableNames.joinToString(",") { "\"${escapeJson(it)}\"" }
         val nodesJson = nodes.joinToString(",") { it.toJson() }
+        val nodeTypeHintsJson = nodeTypeHints.entries.joinToString(",") { (nodeId, typeText) ->
+            "\"${escapeJson(nodeId)}\":\"${escapeJson(typeText)}\""
+        }
         val blueEdgesJson = blueEdges.joinToString(",") { it.toJson() }
         val greenEdgesJson = greenEdges.joinToString(",") { it.toJson() }
 
@@ -73,12 +78,14 @@ class WebUiBridge(private val browser: CefBrowser) {
               "sourceText":"${escapeJson(sourceText)}",
               "diagnostics":[$diagnosticsJson],
               "textHighlights":[$textHighlightsJson],
+              "typeHints":[$typeHintsJson],
               "symbolReplacements":{$symbolReplacementsJson},
               "infixDeclarations":[$infixDeclarationsJson],
               "definitionNames":[$definitionsJson],
               "selectedDefinitionName":$selectedDefinitionJson,
               "freeVariableNames":[$freeVarsJson],
               "nodes":[$nodesJson],
+              "nodeTypeHints":{$nodeTypeHintsJson},
               "blueEdges":[$blueEdgesJson],
               "greenEdges":[$greenEdgesJson]
             }
@@ -91,6 +98,10 @@ class WebUiBridge(private val browser: CefBrowser) {
 
     private fun TextHighlight.toJson(): String {
         return """{"startOffset":${span.startOffset},"endOffset":${span.endOffset},"kind":"${kind.name}"}"""
+    }
+
+    private fun TypeHint.toJson(): String {
+        return """{"id":"${escapeJson(id)}","startOffset":${span.startOffset},"endOffset":${span.endOffset},"type":"${escapeJson(type)}"}"""
     }
 
     private fun InfixDeclaration.toJson(): String {

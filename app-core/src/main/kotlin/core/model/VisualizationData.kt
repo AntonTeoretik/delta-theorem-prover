@@ -25,6 +25,12 @@ data class TermNode(
     val greenOutputCount: Int,
 )
 
+data class TypeHint(
+    val id: String,
+    val span: TextSpan,
+    val type: String,
+)
+
 data class TermEdge(
     val id: String,
     val fromNodeId: String,
@@ -37,12 +43,14 @@ data class VisualizationData(
     val sourceText: String,
     val diagnostics: List<Diagnostic>,
     val textHighlights: List<TextHighlight>,
+    val typeHints: List<TypeHint>,
     val symbolReplacements: Map<String, String>,
     val infixDeclarations: List<InfixDeclaration>,
     val definitionNames: List<String>,
     val selectedDefinitionName: String?,
     val freeVariableNames: List<String>,
     val nodes: List<TermNode>,
+    val nodeTypeHints: Map<String, String>,
     val blueEdges: List<TermEdge>,
     val greenEdges: List<TermEdge>,
 )

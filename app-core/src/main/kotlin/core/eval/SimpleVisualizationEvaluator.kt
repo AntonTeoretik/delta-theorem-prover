@@ -14,8 +14,8 @@ import core.typecheck.TypeChecker
 
 class SimpleVisualizationEvaluator : VisualizationEvaluator {
     override fun evaluate(document: ParsedDocument, selectedDefinitionName: String?, caretOffset: Int?): VisualizationData {
-        val typeDiagnostics = TypeChecker(document).checkProgram()
-        val allDiagnostics = document.diagnostics + typeDiagnostics
+        val typeCheck = TypeChecker(document).checkProgram()
+        val allDiagnostics = document.diagnostics + typeCheck.diagnostics
         val definitionNames = document.definitions.map { it.name }
         val textHighlights = buildTextHighlights(document, caretOffset)
         val selected = document.definitions.firstOrNull { it.name == selectedDefinitionName }
@@ -24,12 +24,14 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 sourceText = document.sourceText,
                 diagnostics = allDiagnostics,
                 textHighlights = textHighlights,
+                typeHints = typeCheck.typeHints,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
                 definitionNames = definitionNames,
                 selectedDefinitionName = null,
                 freeVariableNames = emptyList(),
                 nodes = emptyList(),
+                nodeTypeHints = emptyMap(),
                 blueEdges = emptyList(),
                 greenEdges = emptyList(),
             )
@@ -46,30 +48,37 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 sourceText = document.sourceText,
                 diagnostics = allDiagnostics,
                 textHighlights = textHighlights,
+                typeHints = typeCheck.typeHints,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
                 definitionNames = definitionNames,
                 selectedDefinitionName = selected.name,
                 freeVariableNames = emptyList(),
                 nodes = emptyList(),
+                nodeTypeHints = emptyMap(),
                 blueEdges = emptyList(),
                 greenEdges = emptyList(),
             )
         }
 
-        val builder = TermGraphBuilder(knownConstantsBeforeSelected)
+        val builder = TermGraphBuilder(
+            knownConstants = knownConstantsBeforeSelected,
+            inferredTypes = typeCheck.inferredTypes,
+        )
         val graph = builder.build(selectedTerm)
 
         return VisualizationData(
             sourceText = document.sourceText,
             diagnostics = allDiagnostics,
             textHighlights = textHighlights,
+            typeHints = typeCheck.typeHints,
             symbolReplacements = SymbolDisplay.symbolReplacements,
             infixDeclarations = document.infixDeclarations,
             definitionNames = definitionNames,
             selectedDefinitionName = selected.name,
             freeVariableNames = graph.freeVariableNames,
             nodes = graph.nodes,
+            nodeTypeHints = graph.nodeTypeHints,
             blueEdges = graph.blueEdges,
             greenEdges = graph.greenEdges,
         )
@@ -97,6 +106,9 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         }
         collector.freeVariableSpans.forEach { span ->
             highlights += TextHighlight(span, TextHighlightKind.FREE_VARIABLE)
+        }
+        collector.typeUniverseSpans.forEach { span ->
+            highlights += TextHighlight(span, TextHighlightKind.TYPE_UNIVERSE)
         }
         collector.boundVariableSpans.forEach { span ->
             highlights += TextHighlight(span, TextHighlightKind.BOUND_VARIABLE)
@@ -182,6 +194,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
 private class SymbolCollector {
     val constantSpans: MutableMap<String, MutableList<TextSpan>> = linkedMapOf()
     val freeVariableSpans: MutableList<TextSpan> = mutableListOf()
+    val typeUniverseSpans: MutableList<TextSpan> = mutableListOf()
     val boundVariableSpans: MutableList<TextSpan> = mutableListOf()
     val bindersById: MutableMap<Int, BinderInfo> = linkedMapOf()
 
@@ -262,6 +275,8 @@ private class SymbolCollector {
                     if (binderId != null) {
                         bindersById[binderId]?.useSpans?.add(term.span)
                     }
+                } else if (term.name == "Type") {
+                    typeUniverseSpans += term.span
                 } else if (term.name in knownConstants) {
                     constantSpans.getOrPut(term.name) { mutableListOf() }.add(term.span)
                 } else {
@@ -293,7 +308,10 @@ private data class BinderInfo(
     val useSpans: MutableList<TextSpan>,
 )
 
-private class TermGraphBuilder(private val knownConstants: Set<String>) {
+private class TermGraphBuilder(
+    private val knownConstants: Set<String>,
+    private val inferredTypes: Map<Term, Term>,
+) {
     private val nodes = mutableListOf<MutableNode>()
     private val blueEdges = mutableListOf<TermEdge>()
     private val greenEdges = mutableListOf<TermEdge>()
@@ -328,6 +346,13 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
 
         return GraphResult(
             nodes = nodes.map { it.toImmutable() },
+            nodeTypeHints = nodes
+                .mapNotNull { node ->
+                    val sourceTerm = node.sourceTerm ?: return@mapNotNull null
+                    val inferredType = inferredTypes[sourceTerm] ?: return@mapNotNull null
+                    node.id to TypeChecker.prettyTerm(inferredType)
+                }
+                .toMap(),
             blueEdges = blueEdges.toList(),
             greenEdges = greenEdges.toList(),
             freeVariableNames = freeNames,
@@ -346,6 +371,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                     blueOutputCount = 2,
                     greenInputCount = 0,
                     greenOutputCount = 0,
+                    sourceTerm = term,
                 )
                 val fn = addTerm(term.function, scope)
                 val arg = addTerm(term.argument, scope)
@@ -364,6 +390,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                     blueOutputCount = 2,
                     greenInputCount = 0,
                     greenOutputCount = 1,
+                    sourceTerm = term,
                 )
 
                 val parameterType = addTerm(term.parameterType, scope)
@@ -396,6 +423,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                     blueOutputCount = 2,
                     greenInputCount = 0,
                     greenOutputCount = 1,
+                    sourceTerm = term,
                 )
 
                 val parameterType = addTerm(term.parameterType, scope)
@@ -427,6 +455,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                     blueOutputCount = 2,
                     greenInputCount = 0,
                     greenOutputCount = 0,
+                    sourceTerm = term,
                 )
                 val expression = addTerm(term.term, scope)
                 val type = addTerm(term.type, scope)
@@ -446,6 +475,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                     blueOutputCount = 0,
                     greenInputCount = 0,
                     greenOutputCount = 0,
+                    sourceTerm = term,
                 ).id
             }
 
@@ -461,6 +491,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                         blueOutputCount = 0,
                         greenInputCount = 0,
                         greenOutputCount = 0,
+                        sourceTerm = term,
                     ).id
                 }
 
@@ -473,6 +504,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                     blueOutputCount = 0,
                     greenInputCount = 1,
                     greenOutputCount = 0,
+                    sourceTerm = term,
                 )
 
                 val binder = scope[term.name]
@@ -497,6 +529,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
                     blueOutputCount = 0,
                     greenInputCount = 0,
                     greenOutputCount = 0,
+                    sourceTerm = term,
                 ).id
             }
         }
@@ -511,6 +544,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
         blueOutputCount: Int,
         greenInputCount: Int,
         greenOutputCount: Int,
+        sourceTerm: Term? = null,
     ): MutableNode {
         val node = MutableNode(
             id = "n${nextNodeId++}",
@@ -524,6 +558,7 @@ private class TermGraphBuilder(private val knownConstants: Set<String>) {
             blueOutputCount = blueOutputCount,
             greenInputCount = greenInputCount,
             greenOutputCount = greenOutputCount,
+            sourceTerm = sourceTerm,
         )
         nodes += node
         return node
@@ -602,6 +637,7 @@ private data class BinderRef(
 
 private data class GraphResult(
     val nodes: List<TermNode>,
+    val nodeTypeHints: Map<String, String>,
     val blueEdges: List<TermEdge>,
     val greenEdges: List<TermEdge>,
     val freeVariableNames: List<String>,
@@ -619,6 +655,7 @@ private data class MutableNode(
     var blueOutputCount: Int,
     var greenInputCount: Int,
     var greenOutputCount: Int,
+    val sourceTerm: Term?,
 ) {
     fun toImmutable(): TermNode {
         return TermNode(

@@ -7,6 +7,7 @@ data class TextSpan(
 
 enum class TextHighlightKind {
     CONSTANT,
+    TYPE_UNIVERSE,
     FREE_VARIABLE,
     BOUND_VARIABLE,
     ACTIVE_CONSTANT_USAGE,

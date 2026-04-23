@@ -599,11 +599,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 null
             }
             consume(TokenType.RPAREN, "Expected ')' after forall binder", diagnostics)
-            return LambdaParameter(
-                name = identifier.text.ifBlank { "_" },
-                span = TextSpan(identifier.startOffset, identifier.endOffset),
-                type = parameterType,
-            )
+            return binderParameter(identifier, parameterType, diagnostics)
         }
 
         val identifier = consume(TokenType.IDENT, "Expected identifier after '∀'", diagnostics)
@@ -612,11 +608,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         } else {
             null
         }
-        return LambdaParameter(
-            name = identifier.text.ifBlank { "_" },
-            span = TextSpan(identifier.startOffset, identifier.endOffset),
-            type = parameterType,
-        )
+        return binderParameter(identifier, parameterType, diagnostics)
     }
 
     private fun parseLambdaParameterInGroup(diagnostics: MutableList<Diagnostic>): LambdaParameter {
@@ -628,11 +620,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 null
             }
             consume(TokenType.RPAREN, "Expected ')' after lambda binder", diagnostics)
-            return LambdaParameter(
-                name = identifier.text.ifBlank { "_" },
-                span = TextSpan(identifier.startOffset, identifier.endOffset),
-                type = parameterType,
-            )
+            return binderParameter(identifier, parameterType, diagnostics)
         }
 
         val identifier = consume(TokenType.IDENT, "Expected identifier in lambda parameters", diagnostics)
@@ -641,11 +629,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         } else {
             null
         }
-        return LambdaParameter(
-            name = identifier.text.ifBlank { "_" },
-            span = TextSpan(identifier.startOffset, identifier.endOffset),
-            type = parameterType,
-        )
+        return binderParameter(identifier, parameterType, diagnostics)
     }
 
     private fun parseLambdaParameter(diagnostics: MutableList<Diagnostic>): LambdaParameter {
@@ -657,18 +641,30 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 null
             }
             consume(TokenType.RPAREN, "Expected ')' after lambda binder", diagnostics)
-            return LambdaParameter(
-                name = identifier.text.ifBlank { "_" },
-                span = TextSpan(identifier.startOffset, identifier.endOffset),
-                type = parameterType,
-            )
+            return binderParameter(identifier, parameterType, diagnostics)
         }
 
         val identifier = consume(TokenType.IDENT, "Expected identifier after '\\'", diagnostics)
+        return binderParameter(identifier, null, diagnostics)
+    }
+
+    private fun binderParameter(
+        identifier: Token,
+        parameterType: Term?,
+        diagnostics: MutableList<Diagnostic>,
+    ): LambdaParameter {
+        val span = TextSpan(identifier.startOffset, identifier.endOffset)
+        val rawName = identifier.text.ifBlank { "_" }
+        val name = if (rawName == RESERVED_LOCAL_NAME) {
+            diagnostics += Diagnostic("'Type' is reserved", identifier.line, identifier.column)
+            "_"
+        } else {
+            rawName
+        }
         return LambdaParameter(
-            name = identifier.text.ifBlank { "_" },
-            span = TextSpan(identifier.startOffset, identifier.endOffset),
-            type = null,
+            name = name,
+            span = span,
+            type = parameterType,
         )
     }
 
@@ -918,5 +914,6 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         const val PI_ARROW_PRECEDENCE: Int = 0
         const val TYPE_ANNOTATION_PRECEDENCE: Int = 1
         const val DEFAULT_BACKTICK_PRECEDENCE: Int = 9
+        const val RESERVED_LOCAL_NAME: String = "Type"
     }
 }
