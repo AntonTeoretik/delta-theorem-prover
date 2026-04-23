@@ -1,6 +1,7 @@
 package core.eval
 
 import core.model.ParsedDocument
+import core.model.SymbolDisplay
 import core.model.Term
 import core.model.TermEdge
 import core.model.TextHighlight
@@ -20,6 +21,8 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 sourceText = document.sourceText,
                 diagnostics = document.diagnostics,
                 textHighlights = textHighlights,
+                symbolReplacements = SymbolDisplay.symbolReplacements,
+                infixDeclarations = document.infixDeclarations,
                 definitionNames = definitionNames,
                 selectedDefinitionName = null,
                 freeVariableNames = emptyList(),
@@ -35,6 +38,8 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             sourceText = document.sourceText,
             diagnostics = document.diagnostics,
             textHighlights = textHighlights,
+            symbolReplacements = SymbolDisplay.symbolReplacements,
+            infixDeclarations = document.infixDeclarations,
             definitionNames = definitionNames,
             selectedDefinitionName = selected.name,
             freeVariableNames = graph.freeVariableNames,
@@ -310,10 +315,11 @@ private class TermGraphBuilder {
             }
 
             is Term.Constant -> {
+                val label = SymbolDisplay.displayName(term.name)
                 addNode(
                     type = TermNodeType.CONST,
-                    label = term.name,
-                    width = maxOf(48.0, 22.0 + term.name.length * 9.0),
+                    label = label,
+                    width = maxOf(48.0, 22.0 + label.length * 9.0),
                     height = 48.0,
                     blueInputCount = 1,
                     blueOutputCount = 0,

@@ -34,6 +34,8 @@ data class VisualizationData(
     val sourceText: String,
     val diagnostics: List<Diagnostic>,
     val textHighlights: List<TextHighlight>,
+    val symbolReplacements: Map<String, String>,
+    val infixDeclarations: List<InfixDeclaration>,
     val definitionNames: List<String>,
     val selectedDefinitionName: String?,
     val freeVariableNames: List<String>,

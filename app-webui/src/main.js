@@ -1,5 +1,7 @@
 const editorInput = document.getElementById('editorInput');
 const editorHighlight = document.getElementById('editorHighlight');
+const editorLayer = document.querySelector('.editor-layer');
+const editorCaretOverlay = document.getElementById('editorCaretOverlay');
 const canvas = document.getElementById('vizCanvas');
 const stats = document.getElementById('stats');
 const compactToggle = document.getElementById('compactToggle');
@@ -45,10 +47,17 @@ const renderer = createRendererFn({
 
 let suppressHostNotify = false;
 let lastSentCaretOffset = -1;
+let activeSymbolReplacements = {};
+let overlayInputMode = {
+  active: false,
+  start: null,
+  buffer: '',
+};
 let lastPayload = {
   sourceText: '',
   diagnostics: [],
   textHighlights: [],
+  symbolReplacements: {},
   definitionNames: [],
   selectedDefinitionName: null,
   freeVariableNames: [],
@@ -57,6 +66,12 @@ let lastPayload = {
   greenEdges: [],
 };
 let renderedPayload = lastPayload;
+let lastProjection = {
+  displayText: '',
+  rawToDisplay: [0],
+};
+
+const BACKSLASH_TOKEN_CHAR = /[^\s]/;
 
 function escapeHtml(text) {
   return text
@@ -65,31 +80,163 @@ function escapeHtml(text) {
     .replaceAll('>', '&gt;');
 }
 
-function buildOverlayText(sourceText) {
-  const isLambdaSpacing = (ch) => ch === ' ' || ch === '\t';
+function resolveSymbolReplacements(payload) {
+  const table = {};
+  const candidates = [
+    payload?.symbolReplacements,
+    payload?.backslashReplacements,
+    payload?.backslashSymbolMap,
+    payload?.symbolMap,
+  ];
 
-  let result = '';
-  let hideWhitespaceAfterLambda = false;
-
-  for (let i = 0; i < sourceText.length; i += 1) {
-    const ch = sourceText[i];
-
-    if (ch === '\\' && i + 1 < sourceText.length && isLambdaSpacing(sourceText[i + 1])) {
-      result += 'λ';
-      hideWhitespaceAfterLambda = true;
-      continue;
+  function putEntry(rawKey, rawValue) {
+    if (typeof rawKey !== 'string' || typeof rawValue !== 'string' || rawValue.length === 0) {
+      return;
     }
-
-    if (hideWhitespaceAfterLambda && isLambdaSpacing(ch)) {
-      result += '\u200b';
-      continue;
+    const trimmed = rawKey.trim();
+    if (!trimmed) {
+      return;
     }
-
-    hideWhitespaceAfterLambda = false;
-    result += ch;
+    const key = trimmed.startsWith('\\') ? trimmed.slice(1) : trimmed;
+    if (!key) {
+      return;
+    }
+    table[key] = rawValue;
   }
 
-  return result;
+  candidates.forEach((candidate) => {
+    if (!candidate) {
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        putEntry(entry.token ?? entry.name ?? entry.key, entry.symbol ?? entry.value ?? entry.replacement);
+      });
+      return;
+    }
+    if (typeof candidate === 'object') {
+      Object.entries(candidate).forEach(([key, value]) => {
+        putEntry(key, value);
+      });
+    }
+  });
+
+  return table;
+}
+
+function isTokenChar(ch) {
+  return Boolean(ch) && BACKSLASH_TOKEN_CHAR.test(ch);
+}
+
+function resolveSpecialSymbol(token) {
+  if (token.length === 0) {
+    return 'λ';
+  }
+  return activeSymbolReplacements[token] || null;
+}
+
+function isWhitespace(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
+function resetSlashMode() {
+  overlayInputMode.active = false;
+  overlayInputMode.start = null;
+  overlayInputMode.buffer = '';
+}
+
+function enterSlashMode(start) {
+  overlayInputMode.active = true;
+  overlayInputMode.start = start;
+  overlayInputMode.buffer = '';
+}
+
+function refreshSlashModeForSelection() {
+  if (!overlayInputMode.active) {
+    return;
+  }
+  const start = editorInput.selectionStart ?? 0;
+  const end = editorInput.selectionEnd ?? start;
+  if (start !== end || start !== overlayInputMode.start) {
+    resetSlashMode();
+  }
+}
+
+function setProjection(rawToDisplay, rawStart, rawLength, displayStart, displayLength, mode = 'scaled') {
+  rawToDisplay[rawStart] = displayStart;
+  if (rawLength <= 0) {
+    return;
+  }
+
+  if (mode === 'identity') {
+    for (let step = 1; step <= rawLength; step += 1) {
+      rawToDisplay[rawStart + step] = displayStart + Math.min(step, displayLength);
+    }
+    return;
+  }
+
+  if (mode === 'compressed') {
+    for (let step = 1; step <= rawLength; step += 1) {
+      rawToDisplay[rawStart + step] = step < rawLength ? displayStart : displayStart + displayLength;
+    }
+    return;
+  }
+
+  for (let step = 1; step <= rawLength; step += 1) {
+    rawToDisplay[rawStart + step] = displayStart + Math.round((step * displayLength) / rawLength);
+  }
+}
+
+function buildOverlayProjection(sourceText) {
+  const rawToDisplay = new Array(sourceText.length + 1);
+  rawToDisplay[0] = 0;
+
+  let rawIndex = 0;
+  let displayIndex = 0;
+  let displayText = '';
+
+  function append(rawLength, displayChunk, mode = 'identity') {
+    const displayStart = displayIndex;
+    displayText += displayChunk;
+    displayIndex += displayChunk.length;
+    setProjection(rawToDisplay, rawIndex, rawLength, displayStart, displayChunk.length, mode);
+    rawIndex += rawLength;
+  }
+
+  while (rawIndex < sourceText.length) {
+    const ch = sourceText[rawIndex];
+    append(1, ch);
+  }
+
+  if (overlayInputMode.active && Number.isInteger(overlayInputMode.start)) {
+    const start = Math.max(0, Math.min(sourceText.length, overlayInputMode.start));
+    const tokenText = `\\${overlayInputMode.buffer}`;
+    const before = displayText.slice(0, start);
+    const after = displayText.slice(start);
+    displayText = `${before}${tokenText}${after}`;
+
+    for (let i = start + 1; i < rawToDisplay.length; i += 1) {
+      rawToDisplay[i] += tokenText.length;
+    }
+
+    return {
+      displayText,
+      rawToDisplay,
+      activeDisplayRange: {
+        start,
+        end: start + tokenText.length,
+      },
+    };
+  }
+
+  return {
+    displayText,
+    rawToDisplay,
+    activeDisplayRange: null,
+  };
 }
 
 function highlightClassFor(kind) {
@@ -119,7 +266,9 @@ function highlightClassFor(kind) {
 
 function buildEditorHighlightHtml(text, spans) {
   const sourceText = text || '';
-  const overlayText = buildOverlayText(sourceText);
+  const projection = buildOverlayProjection(sourceText);
+  lastProjection = projection;
+  const overlayText = projection.displayText;
   if (sourceText.length === 0) {
     return '\n';
   }
@@ -129,12 +278,24 @@ function buildEditorHighlightHtml(text, spans) {
       const start = Number.isFinite(span.startOffset) ? Math.max(0, Math.min(sourceText.length, span.startOffset)) : 0;
       const end = Number.isFinite(span.endOffset) ? Math.max(start, Math.min(sourceText.length, span.endOffset)) : start;
       return {
-        start,
-        end,
+        start: projection.rawToDisplay[start],
+        end: projection.rawToDisplay[end],
         kind: highlightClassFor(span.kind),
       };
     })
     .filter((span) => span.end > span.start && span.kind);
+
+  if (projection.activeDisplayRange) {
+    const activeStart = projection.activeDisplayRange.start;
+    const activeEnd = projection.activeDisplayRange.end;
+    if (activeEnd > activeStart) {
+      validSpans.push({
+        start: activeStart,
+        end: activeEnd,
+        kind: 'hl-slash-mode-active',
+      });
+    }
+  }
 
   if (validSpans.length === 0) {
     return `${escapeHtml(overlayText)}\n`;
@@ -142,7 +303,7 @@ function buildEditorHighlightHtml(text, spans) {
 
   const starts = new Map();
   const ends = new Map();
-  const points = new Set([0, sourceText.length]);
+  const points = new Set([0, overlayText.length]);
 
   validSpans.forEach((span) => {
     if (!starts.has(span.start)) {
@@ -200,8 +361,53 @@ function buildEditorHighlightHtml(text, spans) {
   return `${result}\n`;
 }
 
+function updateEditorCaretOverlay() {
+  const isFocused = document.activeElement === editorInput;
+  const start = editorInput.selectionStart ?? 0;
+  const end = editorInput.selectionEnd ?? start;
+  if (!isFocused || start !== end || !lastProjection || !Array.isArray(lastProjection.rawToDisplay)) {
+    editorCaretOverlay.style.display = 'none';
+    return;
+  }
+
+  const displayOffset = lastProjection.rawToDisplay[Math.max(0, Math.min(start, lastProjection.rawToDisplay.length - 1))] ?? 0;
+  const before = escapeHtml((lastProjection.displayText || '').slice(0, displayOffset));
+
+  const probe = document.createElement('div');
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  probe.style.pointerEvents = 'none';
+  probe.style.whiteSpace = 'pre-wrap';
+  probe.style.overflowWrap = 'break-word';
+  probe.style.font = window.getComputedStyle(editorInput).font;
+  probe.style.lineHeight = window.getComputedStyle(editorInput).lineHeight;
+  probe.style.padding = '12px';
+  probe.style.width = `${editorInput.clientWidth}px`;
+  probe.style.height = `${editorInput.clientHeight}px`;
+  probe.style.left = '0';
+  probe.style.top = '0';
+  probe.innerHTML = `${before}<span id="caretProbe">|</span>`;
+  editorLayer.appendChild(probe);
+
+  const marker = probe.querySelector('#caretProbe');
+  const markerRect = marker.getBoundingClientRect();
+  const layerRect = editorLayer.getBoundingClientRect();
+  const lineHeight = Number.parseFloat(window.getComputedStyle(editorInput).lineHeight) || 20;
+
+  const left = markerRect.left - layerRect.left - editorInput.scrollLeft;
+  const top = markerRect.top - layerRect.top - editorInput.scrollTop;
+
+  editorCaretOverlay.style.display = 'block';
+  editorCaretOverlay.style.left = `${Math.max(0, left)}px`;
+  editorCaretOverlay.style.top = `${Math.max(0, top)}px`;
+  editorCaretOverlay.style.height = `${lineHeight}px`;
+
+  probe.remove();
+}
+
 function syncEditorOverlayScroll() {
   editorHighlight.style.transform = `translate(${-editorInput.scrollLeft}px, ${-editorInput.scrollTop}px)`;
+  updateEditorCaretOverlay();
 }
 
 function renderEditorHighlight(payload) {
@@ -209,6 +415,14 @@ function renderEditorHighlight(payload) {
   const highlights = payload?.textHighlights || [];
   editorHighlight.innerHTML = buildEditorHighlightHtml(sourceText, highlights);
   syncEditorOverlayScroll();
+  updateEditorCaretOverlay();
+}
+
+function renderEditorWithCurrentHighlights() {
+  renderEditorHighlight({
+    sourceText: editorInput.value,
+    textHighlights: lastPayload?.textHighlights || [],
+  });
 }
 
 function notifyCaretMoved() {
@@ -220,7 +434,43 @@ function notifyCaretMoved() {
   notifyHostEditorCaretMovedFn(caretOffset);
 }
 
+function applyEditorTextChange(nextText, caretOffset) {
+  editorInput.value = nextText;
+  editorInput.setSelectionRange(caretOffset, caretOffset);
+  renderEditorWithCurrentHighlights();
+  if (!suppressHostNotify) {
+    notifyHostTextChangedFn(editorInput.value);
+  }
+  notifyCaretMoved();
+}
+
+function findBackslashAtomAt(text, index) {
+  if (index < 0 || index >= text.length) {
+    return null;
+  }
+
+  let start = index;
+  while (start > 0 && !isWhitespace(text[start - 1])) {
+    start -= 1;
+  }
+  if (text[start] !== '\\') {
+    return null;
+  }
+
+  let end = start + 1;
+  while (end < text.length && !isWhitespace(text[end])) {
+    end += 1;
+  }
+
+  if (end - start <= 1 || index < start || index >= end) {
+    return null;
+  }
+
+  return { start, end };
+}
+
 function renderCurrent(resetView) {
+  lastPayload.symbolReplacements = activeSymbolReplacements;
   renderedPayload = compactifyGraph(lastPayload, compactToggle.checked);
   renderDefinitionBarFn(definitionBar, renderedPayload, notifyHostDefinitionSelectedFn);
 
@@ -233,6 +483,8 @@ function renderCurrent(resetView) {
 window.renderFromHost = (payload) => {
   const previousNodeCount = (lastPayload.nodes || []).length;
   lastPayload = payload || lastPayload;
+  activeSymbolReplacements = resolveSymbolReplacements(lastPayload);
+  refreshSlashModeForSelection();
   renderEditorHighlight(lastPayload);
   const shouldResetView = previousNodeCount === 0 && (lastPayload.nodes || []).length > 0;
   renderCurrent(shouldResetView);
@@ -246,7 +498,8 @@ if (window.__deltaQueuedPayload !== null) {
 window.setEditorTextFromHost = (text) => {
   suppressHostNotify = true;
   editorInput.value = text || '';
-  renderEditorHighlight({ sourceText: editorInput.value, textHighlights: [] });
+  resetSlashMode();
+  renderEditorWithCurrentHighlights();
   syncEditorOverlayScroll();
   lastSentCaretOffset = -1;
   suppressHostNotify = false;
@@ -260,21 +513,145 @@ if (window.__deltaQueuedEditorText !== null) {
 }
 
 editorInput.addEventListener('input', () => {
-  renderEditorHighlight({ sourceText: editorInput.value, textHighlights: [] });
+  refreshSlashModeForSelection();
+  renderEditorWithCurrentHighlights();
   if (!suppressHostNotify) {
     notifyHostTextChangedFn(editorInput.value);
   }
   notifyCaretMoved();
 });
 
+editorInput.addEventListener('keydown', (event) => {
+  if (event.altKey || event.ctrlKey || event.metaKey) {
+    return;
+  }
+
+  const selectionStart = editorInput.selectionStart ?? 0;
+  const selectionEnd = editorInput.selectionEnd ?? selectionStart;
+
+  const text = editorInput.value;
+
+  if (overlayInputMode.active) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      resetSlashMode();
+      renderEditorWithCurrentHighlights();
+      return;
+    }
+
+    if (event.key === 'Backspace') {
+      event.preventDefault();
+      if (overlayInputMode.buffer.length > 0) {
+        overlayInputMode.buffer = overlayInputMode.buffer.slice(0, -1);
+      } else {
+        resetSlashMode();
+      }
+      renderEditorWithCurrentHighlights();
+      return;
+    }
+
+    if (event.key === 'Delete') {
+      event.preventDefault();
+      resetSlashMode();
+      renderEditorWithCurrentHighlights();
+      return;
+    }
+
+    if (event.key === ' ' || event.key === 'Tab') {
+      event.preventDefault();
+      const symbol = resolveSpecialSymbol(overlayInputMode.buffer);
+      if (symbol) {
+        const start = overlayInputMode.start;
+        const nextText = text.slice(0, start) + symbol + text.slice(start);
+        resetSlashMode();
+        applyEditorTextChange(nextText, start + 1);
+      } else {
+        const rawToken = `\\${overlayInputMode.buffer}`;
+        const start = overlayInputMode.start;
+        const nextText = text.slice(0, start) + rawToken + text.slice(start);
+        resetSlashMode();
+        applyEditorTextChange(nextText, start + rawToken.length);
+      }
+      return;
+    }
+
+    if (event.key.length === 1 && !isWhitespace(event.key)) {
+      event.preventDefault();
+      overlayInputMode.buffer += event.key;
+      renderEditorWithCurrentHighlights();
+      return;
+    }
+
+    return;
+  }
+
+  if (event.key === '\\' && selectionStart === selectionEnd) {
+    event.preventDefault();
+    enterSlashMode(selectionStart);
+    renderEditorWithCurrentHighlights();
+    return;
+  }
+
+  if (selectionStart !== selectionEnd) {
+    return;
+  }
+
+  if ((event.key !== 'Backspace' && event.key !== 'Delete')) {
+    return;
+  }
+
+  if (event.key === 'Backspace') {
+    const atom = findBackslashAtomAt(text, selectionStart - 1);
+    if (!atom || selectionStart <= atom.start || selectionStart > atom.end) {
+      return;
+    }
+    event.preventDefault();
+    applyEditorTextChange(text.slice(0, atom.start) + text.slice(atom.end), atom.start);
+    return;
+  }
+
+  const atom = findBackslashAtomAt(text, selectionStart);
+  if (!atom || selectionStart < atom.start || selectionStart >= atom.end) {
+    return;
+  }
+  event.preventDefault();
+  applyEditorTextChange(text.slice(0, atom.start) + text.slice(atom.end), atom.start);
+});
+
 editorInput.addEventListener('scroll', syncEditorOverlayScroll);
-editorInput.addEventListener('keyup', notifyCaretMoved);
-editorInput.addEventListener('click', notifyCaretMoved);
-editorInput.addEventListener('select', notifyCaretMoved);
-editorInput.addEventListener('focus', notifyCaretMoved);
+editorInput.addEventListener('keyup', () => {
+  refreshSlashModeForSelection();
+  renderEditorWithCurrentHighlights();
+  notifyCaretMoved();
+  updateEditorCaretOverlay();
+});
+editorInput.addEventListener('click', () => {
+  refreshSlashModeForSelection();
+  renderEditorWithCurrentHighlights();
+  notifyCaretMoved();
+  updateEditorCaretOverlay();
+});
+editorInput.addEventListener('select', () => {
+  refreshSlashModeForSelection();
+  renderEditorWithCurrentHighlights();
+  notifyCaretMoved();
+  updateEditorCaretOverlay();
+});
+editorInput.addEventListener('focus', () => {
+  refreshSlashModeForSelection();
+  renderEditorWithCurrentHighlights();
+  notifyCaretMoved();
+  updateEditorCaretOverlay();
+});
+editorInput.addEventListener('blur', () => {
+  editorCaretOverlay.style.display = 'none';
+});
 document.addEventListener('selectionchange', () => {
   if (document.activeElement === editorInput) {
+    refreshSlashModeForSelection();
+    renderEditorWithCurrentHighlights();
     notifyCaretMoved();
+    updateEditorCaretOverlay();
   }
 });
 
@@ -338,5 +715,6 @@ window.addEventListener('mouseup', () => {
 });
 
 canvas.style.cursor = 'grab';
+resetSlashMode();
 renderEditorHighlight(lastPayload);
 renderCurrent(true);

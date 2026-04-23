@@ -103,7 +103,16 @@ body {
   color: transparent;
   resize: none;
   outline: none;
-  caret-color: #ffb173;
+  caret-color: transparent;
+}
+
+#editorCaretOverlay {
+  position: absolute;
+  width: 1.5px;
+  background: #ffb173;
+  pointer-events: none;
+  display: none;
+  z-index: 3;
 }
 
 #editorInput::selection {
@@ -133,6 +142,13 @@ body {
 .hl-active-bound-definition {
   background: rgba(138, 206, 148, 0.22);
   border-radius: 2px;
+}
+
+.hl-slash-mode-active {
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgba(255, 201, 145, 0.9);
+  text-underline-offset: 2px;
 }
 
 .header {

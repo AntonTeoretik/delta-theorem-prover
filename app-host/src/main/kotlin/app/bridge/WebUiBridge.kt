@@ -1,6 +1,7 @@
 package app.bridge
 
 import core.model.Diagnostic
+import core.model.InfixDeclaration
 import core.model.TermEdge
 import core.model.TextHighlight
 import core.model.TermNode
@@ -56,6 +57,10 @@ class WebUiBridge(private val browser: CefBrowser) {
     private fun VisualizationData.toJson(): String {
         val diagnosticsJson = diagnostics.joinToString(",") { it.toJson() }
         val textHighlightsJson = textHighlights.joinToString(",") { it.toJson() }
+        val symbolReplacementsJson = symbolReplacements.entries.joinToString(",") { (from, to) ->
+            "\"${escapeJson(from)}\":\"${escapeJson(to)}\""
+        }
+        val infixDeclarationsJson = infixDeclarations.joinToString(",") { it.toJson() }
         val definitionsJson = definitionNames.joinToString(",") { "\"${escapeJson(it)}\"" }
         val selectedDefinitionJson = selectedDefinitionName?.let { "\"${escapeJson(it)}\"" } ?: "null"
         val freeVarsJson = freeVariableNames.joinToString(",") { "\"${escapeJson(it)}\"" }
@@ -68,6 +73,8 @@ class WebUiBridge(private val browser: CefBrowser) {
               "sourceText":"${escapeJson(sourceText)}",
               "diagnostics":[$diagnosticsJson],
               "textHighlights":[$textHighlightsJson],
+              "symbolReplacements":{$symbolReplacementsJson},
+              "infixDeclarations":[$infixDeclarationsJson],
               "definitionNames":[$definitionsJson],
               "selectedDefinitionName":$selectedDefinitionJson,
               "freeVariableNames":[$freeVarsJson],
@@ -84,6 +91,10 @@ class WebUiBridge(private val browser: CefBrowser) {
 
     private fun TextHighlight.toJson(): String {
         return """{"startOffset":${span.startOffset},"endOffset":${span.endOffset},"kind":"${kind.name}"}"""
+    }
+
+    private fun InfixDeclaration.toJson(): String {
+        return """{"name":"${escapeJson(name)}","precedence":$precedence,"associativity":"${associativity.name}","nameSpan":{"startOffset":${nameSpan.startOffset},"endOffset":${nameSpan.endOffset}}}"""
     }
 
     private fun TermNode.toJson(): String {

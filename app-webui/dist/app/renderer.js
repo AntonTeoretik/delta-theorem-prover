@@ -2,6 +2,21 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function displayName(rawName, symbolReplacements) {
+  if (typeof rawName !== 'string') {
+    return '-';
+  }
+  if (rawName.startsWith('$')) {
+    return rawName.slice(1);
+  }
+  if (rawName.startsWith('\\')) {
+    const withoutSlash = rawName.slice(1);
+    const mapped = symbolReplacements?.[withoutSlash] || symbolReplacements?.[rawName];
+    return typeof mapped === 'string' && mapped.length > 0 ? mapped : rawName;
+  }
+  return rawName;
+}
+
 function nodeCenterX(node) {
   return node.x + node.width / 2;
 }
@@ -248,7 +263,7 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
       } else if (node.type === 'LAMBDA') {
         drawLambdaNode(ctx, node);
       } else if (node.type === 'CONST') {
-        drawSquareNode(ctx, node, node.label || 'c', '#ffd8b4', '#4d3528', '#ffb173');
+        drawSquareNode(ctx, node, displayName(node.label || 'c', payload.symbolReplacements), '#ffd8b4', '#4d3528', '#ffb173');
       } else if (node.type === 'VAR') {
         if (freeVarNodeIds.has(node.id)) {
           drawSquareNode(ctx, node, node.label || 'x', 'rgba(178, 183, 255, 0.92)', '#34384d', '#9da7ff');
@@ -282,7 +297,9 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
       });
     }
 
-    const selected = payload.selectedDefinitionName || '-';
+    const selected = payload.selectedDefinitionName
+      ? displayName(payload.selectedDefinitionName, payload.symbolReplacements)
+      : '-';
     statsElement.textContent =
       `Selected: ${selected} | Nodes: ${(payload.nodes || []).length} | Blue edges: ${(payload.blueEdges || []).length} | Green edges: ${(payload.greenEdges || []).length} | Free vars: ${(payload.freeVariableNames || []).length}`;
   }

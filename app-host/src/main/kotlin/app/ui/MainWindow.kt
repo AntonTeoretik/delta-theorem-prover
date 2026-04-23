@@ -9,7 +9,9 @@ import javax.swing.JFrame
 
 class MainWindow : JFrame("Delta Theorem Prover - MVP Skeleton") {
     private val pipeline = CorePipeline()
-    private var latestText: String = "\$id := \\x . x;\n\$constApp := \\x . (\$c(y, x));"
+    private var latestText: String = buildString {
+
+    }
     private var selectedDefinitionName: String? = null
     private var caretOffset: Int = 0
     private val webViewPanel = WebViewPanel(
