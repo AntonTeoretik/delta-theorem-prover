@@ -1049,8 +1049,8 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     )
 
     private companion object {
-        const val PI_ARROW_PRECEDENCE: Int = 0
-        const val TYPE_ANNOTATION_PRECEDENCE: Int = 1
+        const val TYPE_ANNOTATION_PRECEDENCE: Int = 0
+        const val PI_ARROW_PRECEDENCE: Int = 1
         const val DEFAULT_BACKTICK_PRECEDENCE: Int = 9
         const val RESERVED_LOCAL_NAME: String = "Type"
     }
