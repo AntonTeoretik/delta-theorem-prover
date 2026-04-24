@@ -76,6 +76,7 @@
   }
 
   function highlightClassFor(kind) {
+    if (kind === 'DEFINITION_NAME') return 'hl-definition-name';
     if (kind === 'CONSTANT') return 'hl-constant';
     if (kind === 'TYPE_UNIVERSE') return 'hl-type-universe';
     if (kind === 'FREE_VARIABLE') return 'hl-free-var';

@@ -38,6 +38,7 @@ private enum class TokenType {
     LAMBDA,
     FORALL,
     ARROW,
+    FAT_ARROW,
     DOT,
     LPAREN,
     RPAREN,
@@ -82,6 +83,7 @@ private class TermLexer(private val source: String) {
                 ch == 'λ' -> tokens.add(singleToken(TokenType.LAMBDA, "λ"))
                 ch == '∀' -> tokens.add(singleToken(TokenType.FORALL, "∀"))
                 ch == '→' -> tokens.add(singleToken(TokenType.ARROW, "→"))
+                ch == '=' && index + 1 < source.length && source[index + 1] == '>' -> tokens.add(readFatArrow())
                 ch.isCommittedSymbolConstant() -> tokens.add(singleToken(TokenType.SYMBOLIC_IDENT, ch.toString()))
                 ch == '.' -> tokens.add(singleToken(TokenType.DOT, "."))
                 ch == '(' -> tokens.add(singleToken(TokenType.LPAREN, "("))
@@ -132,6 +134,15 @@ private class TermLexer(private val source: String) {
 
         advance('=')
         return Token(TokenType.ASSIGN, ":=", startLine, startColumn, startOffset, index)
+    }
+
+    private fun readFatArrow(): Token {
+        val startLine = line
+        val startColumn = column
+        val startOffset = index
+        advance('=')
+        advance('>')
+        return Token(TokenType.FAT_ARROW, "=>", startLine, startColumn, startOffset, index)
     }
 
     private fun readBackslashPrefixed(): Token {
@@ -396,7 +407,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         if (!isDefinitionStart()) {
             return false
         }
-        return tokens.subList(cursor, tokens.size).any { it.type == TokenType.SEMICOLON }
+
+        return when (peek(1).type) {
+            TokenType.ASSIGN, TokenType.SEMICOLON -> true
+            TokenType.COLON -> tokens
+                .subList((cursor + 2).coerceAtMost(tokens.size), tokens.size)
+                .any { it.type == TokenType.ASSIGN || it.type == TokenType.SEMICOLON }
+
+            else -> false
+        }
     }
 
     private fun parseLeadingInfixDirectives(diagnostics: MutableList<Diagnostic>) {
@@ -581,7 +600,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             list
         }
 
-        consume(TokenType.DOT, "Expected '.' after lambda parameter", diagnostics)
+        consume(TokenType.FAT_ARROW, "Expected '=>' after lambda parameter", diagnostics)
         val body = parseExpression(diagnostics)
 
         return parameters.asReversed().fold(body) { acc, parameter ->
@@ -591,7 +610,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun parseForallExpression(diagnostics: MutableList<Diagnostic>): Term {
-        val parameters = if (isGroupedBinderListStart(TokenType.DOT)) {
+        val parameters = if (isGroupedBinderListStart(TokenType.FAT_ARROW)) {
             parseBinderParameterGroup(diagnostics, "forall")
         } else {
             val list = mutableListOf<LambdaParameter>()
@@ -602,7 +621,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             list
         }
 
-        consume(TokenType.DOT, "Expected '.' after forall parameter", diagnostics)
+        consume(TokenType.FAT_ARROW, "Expected '=>' after forall parameter", diagnostics)
         val body = parseExpression(diagnostics)
 
         return parameters.asReversed().fold(body) { acc, parameter ->
@@ -611,7 +630,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
     }
 
-    private fun isGroupedLambdaParameterListStart(): Boolean = isGroupedBinderListStart(TokenType.DOT)
+    private fun isGroupedLambdaParameterListStart(): Boolean = isGroupedBinderListStart(TokenType.FAT_ARROW)
 
     private fun isGroupedBinderListStart(terminator: TokenType): Boolean {
         if (!check(TokenType.LPAREN)) {

@@ -106,7 +106,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         }
         document.definitions.forEach { definition ->
             definition.nameSpan?.let { span ->
-                highlights += TextHighlight(span, TextHighlightKind.CONSTANT)
+                highlights += TextHighlight(span, TextHighlightKind.DEFINITION_NAME)
             }
         }
         collector.freeVariableSpans.forEach { span ->
