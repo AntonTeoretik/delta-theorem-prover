@@ -95,7 +95,15 @@ private class TermLexer(private val source: String) {
                 ch.isLetter() || ch == '_' -> tokens.add(readIdentifier(TokenType.IDENT))
                 ch.isSymbolicIdentifierStart() -> tokens.add(readSymbolicIdentifier())
                 else -> {
-                    diagnostics.add(Diagnostic("Unexpected character '$ch'", line, column))
+                    diagnostics.add(
+                        Diagnostic(
+                            message = "Unexpected character '$ch'",
+                            line = line,
+                            column = column,
+                            startOffset = index,
+                            endOffset = index + 1,
+                        ),
+                    )
                     advance(ch)
                 }
             }
@@ -147,7 +155,15 @@ private class TermLexer(private val source: String) {
         }
 
         if (buffer.isEmpty()) {
-            diagnostics.add(Diagnostic("Expected constant name after '\\'", startLine, startColumn))
+            diagnostics.add(
+                Diagnostic(
+                    message = "Expected constant name after '\\'",
+                    line = startLine,
+                    column = startColumn,
+                    startOffset = startOffset,
+                    endOffset = index,
+                ),
+            )
         }
 
         if (buffer.toString() == "to") {
@@ -189,7 +205,15 @@ private class TermLexer(private val source: String) {
         advance('$')
 
         if (index >= source.length || !(source[index].isLetter() || source[index] == '_')) {
-            diagnostics.add(Diagnostic("Expected identifier after '$'", startLine, startColumn))
+            diagnostics.add(
+                Diagnostic(
+                    message = "Expected identifier after '$'",
+                    line = startLine,
+                    column = startColumn,
+                    startOffset = startOffset,
+                    endOffset = index,
+                ),
+            )
             return Token(TokenType.CONST_IDENT, "", startLine, startColumn, startOffset, index)
         }
 
@@ -325,7 +349,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             val definitions = parseDefinitions(diagnostics)
             if (!isAtEnd()) {
                 val token = peek()
-                diagnostics.add(Diagnostic("Unexpected token '${token.text.ifEmpty { token.type.name }}'", token.line, token.column))
+                diagnostics.add(
+                    Diagnostic(
+                        message = "Unexpected token '${token.text.ifEmpty { token.type.name }}'",
+                        line = token.line,
+                        column = token.column,
+                        startOffset = token.startOffset,
+                        endOffset = token.endOffset,
+                    ),
+                )
             }
             return ParseResult(
                 definitions = definitions,
@@ -338,7 +370,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         val term = parseExpression(termDiagnostics)
         if (!isAtEnd()) {
             val token = peek()
-            termDiagnostics.add(Diagnostic("Unexpected token '${token.text.ifEmpty { token.type.name }}'", token.line, token.column))
+            termDiagnostics.add(
+                Diagnostic(
+                    message = "Unexpected token '${token.text.ifEmpty { token.type.name }}'",
+                    line = token.line,
+                    column = token.column,
+                    startOffset = token.startOffset,
+                    endOffset = token.endOffset,
+                ),
+            )
         }
 
         return ParseResult(
@@ -376,7 +416,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         val precedenceToken = consume(TokenType.INTEGER, "Expected precedence after '${keyword.text}'", diagnostics)
         val precedence = precedenceToken.text.toIntOrNull()
         if (precedence == null) {
-            diagnostics.add(Diagnostic("Expected integer precedence", precedenceToken.line, precedenceToken.column))
+            diagnostics.add(
+                Diagnostic(
+                    message = "Expected integer precedence",
+                    line = precedenceToken.line,
+                    column = precedenceToken.column,
+                    startOffset = precedenceToken.startOffset,
+                    endOffset = precedenceToken.endOffset,
+                ),
+            )
         }
 
         val nameToken = consumeInfixName(diagnostics)
@@ -399,7 +447,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             return advance()
         }
         val token = peek()
-        diagnostics.add(Diagnostic("Expected operator name in infix declaration", token.line, token.column))
+        diagnostics.add(
+            Diagnostic(
+                message = "Expected operator name in infix declaration",
+                line = token.line,
+                column = token.column,
+                startOffset = token.startOffset,
+                endOffset = token.endOffset,
+            ),
+        )
         return Token(TokenType.IDENT, "", token.line, token.column, token.startOffset, token.endOffset)
     }
 
@@ -429,7 +485,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
             if (!isDefinitionStart()) {
                 val token = peek()
-                diagnostics.add(Diagnostic("Expected definition name like '\$name'", token.line, token.column))
+                diagnostics.add(
+                    Diagnostic(
+                        message = "Expected definition name like '\$name'",
+                        line = token.line,
+                        column = token.column,
+                        startOffset = token.startOffset,
+                        endOffset = token.endOffset,
+                    ),
+                )
                 break
             }
 
@@ -454,7 +518,16 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             )
 
             if (!match(TokenType.SEMICOLON)) {
-                diagnostics.add(Diagnostic("Expected ';' after definition", peek().line, peek().column))
+                val token = peek()
+                diagnostics.add(
+                    Diagnostic(
+                        message = "Expected ';' after definition",
+                        line = token.line,
+                        column = token.column,
+                        startOffset = token.startOffset,
+                        endOffset = token.endOffset,
+                    ),
+                )
                 break
             }
         }
@@ -576,7 +649,16 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         consume(TokenType.LPAREN, "Expected '(' after $kind", diagnostics)
 
         if (check(TokenType.RPAREN)) {
-            diagnostics.add(Diagnostic("Expected $kind parameter", peek().line, peek().column))
+            val token = peek()
+            diagnostics.add(
+                Diagnostic(
+                    message = "Expected $kind parameter",
+                    line = token.line,
+                    column = token.column,
+                    startOffset = token.startOffset,
+                    endOffset = token.endOffset,
+                ),
+            )
             advance()
             return parameters
         }
@@ -656,7 +738,13 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         val span = TextSpan(identifier.startOffset, identifier.endOffset)
         val rawName = identifier.text.ifBlank { "_" }
         val name = if (rawName == RESERVED_LOCAL_NAME) {
-            diagnostics += Diagnostic("'Type' is reserved", identifier.line, identifier.column)
+            diagnostics += Diagnostic(
+                message = "'Type' is reserved",
+                line = identifier.line,
+                column = identifier.column,
+                startOffset = identifier.startOffset,
+                endOffset = identifier.endOffset,
+            )
             "_"
         } else {
             rawName
@@ -673,7 +761,16 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
         while (match(TokenType.LPAREN)) {
             if (check(TokenType.RPAREN)) {
-                diagnostics.add(Diagnostic("Expected at least one argument", peek().line, peek().column))
+                val token = peek()
+                diagnostics.add(
+                    Diagnostic(
+                        message = "Expected at least one argument",
+                        line = token.line,
+                        column = token.column,
+                        startOffset = token.startOffset,
+                        endOffset = token.endOffset,
+                    ),
+                )
                 advance()
                 continue
             }
@@ -683,7 +780,16 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
             while (match(TokenType.COMMA)) {
                 if (check(TokenType.RPAREN)) {
-                    diagnostics.add(Diagnostic("Expected term after ','", peek().line, peek().column))
+                    val token = peek()
+                    diagnostics.add(
+                        Diagnostic(
+                            message = "Expected term after ','",
+                            line = token.line,
+                            column = token.column,
+                            startOffset = token.startOffset,
+                            endOffset = token.endOffset,
+                        ),
+                    )
                     break
                 }
                 arguments.add(parseExpression(diagnostics))
@@ -723,7 +829,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
 
         val token = peek()
-        diagnostics.add(Diagnostic("Expected term", token.line, token.column))
+        diagnostics.add(
+            Diagnostic(
+                message = "Expected term",
+                line = token.line,
+                column = token.column,
+                startOffset = token.startOffset,
+                endOffset = token.endOffset,
+            ),
+        )
         if (!isAtEnd()) {
             advance()
         }
@@ -786,7 +900,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     private fun recoverMalformedBacktick(diagnostics: MutableList<Diagnostic>) {
         val opening = advance()
         if (!isOperatorToken(peek())) {
-            diagnostics.add(Diagnostic("Expected operator name after '`'", opening.line, opening.column))
+            diagnostics.add(
+                Diagnostic(
+                    message = "Expected operator name after '`'",
+                    line = opening.line,
+                    column = opening.column,
+                    startOffset = opening.startOffset,
+                    endOffset = opening.endOffset,
+                ),
+            )
             if (check(TokenType.BACKTICK)) {
                 advance()
             }
@@ -795,7 +917,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
         val operator = advance()
         if (!match(TokenType.BACKTICK)) {
-            diagnostics.add(Diagnostic("Expected closing '`' after operator name", operator.line, operator.column))
+            diagnostics.add(
+                Diagnostic(
+                    message = "Expected closing '`' after operator name",
+                    line = operator.line,
+                    column = operator.column,
+                    startOffset = operator.startOffset,
+                    endOffset = operator.endOffset,
+                ),
+            )
         }
     }
 
@@ -841,7 +971,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
 
         val token = peek()
-        diagnostics.add(Diagnostic(message, token.line, token.column))
+        diagnostics.add(
+            Diagnostic(
+                message = message,
+                line = token.line,
+                column = token.column,
+                startOffset = token.startOffset,
+                endOffset = token.endOffset,
+            ),
+        )
         return Token(type, "", token.line, token.column, token.startOffset, token.endOffset)
     }
 

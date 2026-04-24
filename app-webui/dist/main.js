@@ -1,5 +1,6 @@
 const editorInput = document.getElementById('editorInput');
 const editorHighlight = document.getElementById('editorHighlight');
+const editorLineNumbers = document.getElementById('editorLineNumbers');
 const editorLayer = document.querySelector('.editor-layer');
 const editorCaretOverlay = document.getElementById('editorCaretOverlay');
 const hoverTooltip = document.getElementById('hoverTooltip');
@@ -271,6 +272,9 @@ function highlightClassFor(kind) {
   if (kind === 'ACTIVE_BOUND_DEFINITION') {
     return 'hl-active-bound-definition';
   }
+  if (kind === 'DIAGNOSTIC') {
+    return 'hl-diagnostic';
+  }
   return '';
 }
 
@@ -502,6 +506,7 @@ function updateEditorCaretOverlay() {
 
   const displayOffset = lastProjection.rawToDisplay[Math.max(0, Math.min(start, lastProjection.rawToDisplay.length - 1))] ?? 0;
   const before = escapeHtml((lastProjection.displayText || '').slice(0, displayOffset));
+  const inputStyle = window.getComputedStyle(editorInput);
 
   const probe = document.createElement('div');
   probe.style.position = 'absolute';
@@ -509,9 +514,13 @@ function updateEditorCaretOverlay() {
   probe.style.pointerEvents = 'none';
   probe.style.whiteSpace = 'pre-wrap';
   probe.style.overflowWrap = 'break-word';
-  probe.style.font = window.getComputedStyle(editorInput).font;
-  probe.style.lineHeight = window.getComputedStyle(editorInput).lineHeight;
-  probe.style.padding = '12px';
+  probe.style.font = inputStyle.font;
+  probe.style.lineHeight = inputStyle.lineHeight;
+  probe.style.letterSpacing = inputStyle.letterSpacing;
+  probe.style.paddingTop = inputStyle.paddingTop;
+  probe.style.paddingRight = inputStyle.paddingRight;
+  probe.style.paddingBottom = inputStyle.paddingBottom;
+  probe.style.paddingLeft = inputStyle.paddingLeft;
   probe.style.width = `${editorInput.clientWidth}px`;
   probe.style.height = `${editorInput.clientHeight}px`;
   probe.style.left = '0';
@@ -537,14 +546,25 @@ function updateEditorCaretOverlay() {
 
 function syncEditorOverlayScroll() {
   editorHighlight.style.transform = `translate(${-editorInput.scrollLeft}px, ${-editorInput.scrollTop}px)`;
+  editorLineNumbers.style.transform = `translateY(${-editorInput.scrollTop}px)`;
   updateEditorCaretOverlay();
   collectEditorTypeHintRects(lastPayload?.typeHints || []);
+}
+
+function renderLineNumbers(text) {
+  const lines = Math.max(1, (text || '').split('\n').length);
+  const rows = [];
+  for (let i = 1; i <= lines; i += 1) {
+    rows.push(String(i));
+  }
+  editorLineNumbers.textContent = `${rows.join('\n')}\n`;
 }
 
 function renderEditorHighlight(payload) {
   const sourceText = typeof payload?.sourceText === 'string' ? payload.sourceText : editorInput.value;
   const highlights = payload?.textHighlights || [];
   const typeHints = payload?.typeHints || [];
+  renderLineNumbers(sourceText);
   editorHighlight.innerHTML = buildEditorHighlightHtml(sourceText, highlights, typeHints);
   syncEditorOverlayScroll();
   collectEditorTypeHintRects(typeHints);
@@ -754,6 +774,15 @@ editorInput.addEventListener('keydown', (event) => {
       return;
     }
 
+    return;
+  }
+
+  if (event.key === 'Tab') {
+    event.preventDefault();
+    const start = selectionStart;
+    const end = selectionEnd;
+    const nextText = text.slice(0, start) + '  ' + text.slice(end);
+    applyEditorTextChange(nextText, start + 2);
     return;
   }
 

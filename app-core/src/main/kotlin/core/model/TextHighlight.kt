@@ -14,6 +14,7 @@ enum class TextHighlightKind {
     ACTIVE_CONSTANT_DEFINITION,
     ACTIVE_BOUND_USAGE,
     ACTIVE_BOUND_DEFINITION,
+    DIAGNOSTIC,
 }
 
 data class TextHighlight(

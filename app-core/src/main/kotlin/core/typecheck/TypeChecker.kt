@@ -102,7 +102,7 @@ class TypeChecker(private val document: ParsedDocument) {
                 val innerType = inferType(term.term, locals) ?: return null
                 if (!convertible(innerType, term.type)) {
                     report(
-                        null,
+                        spanOf(term.term),
                         "Annotation mismatch: expected ${pretty(term.type)}, inferred ${pretty(innerType)}",
                     )
                 }
@@ -140,7 +140,7 @@ class TypeChecker(private val document: ParsedDocument) {
                 val argumentType = inferType(term.argument, locals) ?: return null
                 if (!convertible(argumentType, functionType.parameterType)) {
                     report(
-                        null,
+                        spanOf(term.argument),
                         "Application argument type mismatch. Expected ${pretty(functionType.parameterType)}, got ${pretty(argumentType)}",
                     )
                     return null
@@ -375,9 +375,27 @@ class TypeChecker(private val document: ParsedDocument) {
         }
     }
 
+    private fun spanOf(term: Term): TextSpan? {
+        return when (term) {
+            is Term.Variable -> term.span
+            is Term.Constant -> term.span
+            is Term.Meta -> term.span
+            is Term.Lambda -> term.parameterSpan
+            is Term.Pi -> term.parameterSpan
+            is Term.Typed -> spanOf(term.term) ?: spanOf(term.type)
+            is Term.Application -> spanOf(term.function) ?: spanOf(term.argument)
+        }
+    }
+
     private fun report(span: TextSpan?, message: String) {
         val (line, column) = offsetToLineColumn(span?.startOffset ?: 0)
-        diagnostics += Diagnostic(message = message, line = line, column = column)
+        diagnostics += Diagnostic(
+            message = message,
+            line = line,
+            column = column,
+            startOffset = span?.startOffset,
+            endOffset = span?.endOffset,
+        )
     }
 
     private fun offsetToLineColumn(offset: Int): Pair<Int, Int> {

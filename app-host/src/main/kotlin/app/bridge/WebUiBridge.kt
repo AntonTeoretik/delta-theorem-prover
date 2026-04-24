@@ -93,7 +93,9 @@ class WebUiBridge(private val browser: CefBrowser) {
     }
 
     private fun Diagnostic.toJson(): String {
-        return """{"message":"${escapeJson(message)}","line":$line,"column":$column}"""
+        val start = startOffset?.toString() ?: "null"
+        val end = endOffset?.toString() ?: "null"
+        return """{"message":"${escapeJson(message)}","line":$line,"column":$column,"startOffset":$start,"endOffset":$end}"""
     }
 
     private fun TextHighlight.toJson(): String {

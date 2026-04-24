@@ -17,7 +17,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         val typeCheck = TypeChecker(document).checkProgram()
         val allDiagnostics = document.diagnostics + typeCheck.diagnostics
         val definitionNames = document.definitions.map { it.name }
-        val textHighlights = buildTextHighlights(document, caretOffset)
+        val textHighlights = buildTextHighlights(document, allDiagnostics, caretOffset)
         val selected = document.definitions.firstOrNull { it.name == selectedDefinitionName }
             ?: document.definitions.firstOrNull()
             ?: return VisualizationData(
@@ -84,7 +84,11 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         )
     }
 
-    private fun buildTextHighlights(document: ParsedDocument, caretOffset: Int?): List<TextHighlight> {
+    private fun buildTextHighlights(
+        document: ParsedDocument,
+        diagnostics: List<core.model.Diagnostic>,
+        caretOffset: Int?,
+    ): List<TextHighlight> {
         val collector = SymbolCollector()
         val knownConstants = linkedSetOf<String>()
         document.definitions.forEach { definition ->
@@ -125,6 +129,14 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             highlights += TextHighlight(activeBound.definitionSpan, TextHighlightKind.ACTIVE_BOUND_DEFINITION)
             activeBound.usageSpans.forEach { span ->
                 highlights += TextHighlight(span, TextHighlightKind.ACTIVE_BOUND_USAGE)
+            }
+        }
+
+        diagnostics.forEach { diagnostic ->
+            val start = diagnostic.startOffset
+            val end = diagnostic.endOffset
+            if (start != null && end != null && end > start) {
+                highlights += TextHighlight(TextSpan(start, end), TextHighlightKind.DIAGNOSTIC)
             }
         }
 
