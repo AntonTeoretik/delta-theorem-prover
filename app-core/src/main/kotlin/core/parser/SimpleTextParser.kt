@@ -487,7 +487,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 val token = peek()
                 diagnostics.add(
                     Diagnostic(
-                        message = "Expected definition name like '\$name'",
+                        message = "Expected definition name like 'name'",
                         line = token.line,
                         column = token.column,
                         startOffset = token.startOffset,
