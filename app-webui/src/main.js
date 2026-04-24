@@ -148,6 +148,128 @@ function isWhitespace(ch) {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
 
+function matchingBracket(ch) {
+  if (ch === '(') return ')';
+  if (ch === '[') return ']';
+  if (ch === '{') return '}';
+  if (ch === ')') return '(';
+  if (ch === ']') return '[';
+  if (ch === '}') return '{';
+  return null;
+}
+
+function isOpeningBracket(ch) {
+  return ch === '(' || ch === '[' || ch === '{';
+}
+
+function isClosingBracket(ch) {
+  return ch === ')' || ch === ']' || ch === '}';
+}
+
+function findMatchingBracket(text, index) {
+  if (index < 0 || index >= text.length) {
+    return null;
+  }
+
+  const ch = text[index];
+  const match = matchingBracket(ch);
+  if (!match) {
+    return null;
+  }
+
+  if (isOpeningBracket(ch)) {
+    let depth = 0;
+    for (let i = index + 1; i < text.length; i += 1) {
+      if (text[i] === ch) {
+        depth += 1;
+      } else if (text[i] === match) {
+        if (depth === 0) {
+          return i;
+        }
+        depth -= 1;
+      }
+    }
+    return null;
+  }
+
+  let depth = 0;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (text[i] === ch) {
+      depth += 1;
+    } else if (text[i] === match) {
+      if (depth === 0) {
+        return i;
+      }
+      depth -= 1;
+    }
+  }
+  return null;
+}
+
+function isBracketSequenceBalanced(text) {
+  const stack = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (isOpeningBracket(ch)) {
+      stack.push(ch);
+      continue;
+    }
+    if (!isClosingBracket(ch)) {
+      continue;
+    }
+    const expectedOpen = matchingBracket(ch);
+    const top = stack[stack.length - 1];
+    if (!top || top !== expectedOpen) {
+      return false;
+    }
+    stack.pop();
+  }
+  return stack.length === 0;
+}
+
+function shouldSkipExistingClosing(text, caretOffset, closingBracket) {
+  if (text[caretOffset] !== closingBracket) {
+    return false;
+  }
+  if (!isBracketSequenceBalanced(text)) {
+    return false;
+  }
+  const matchingIndex = findMatchingBracket(text, caretOffset);
+  return Number.isInteger(matchingIndex) && matchingIndex < caretOffset;
+}
+
+function resolveBracketHighlight(text, caretOffset) {
+  if (!text || text.length === 0) {
+    return null;
+  }
+
+  const candidates = [];
+  if (caretOffset >= 0 && caretOffset < text.length) {
+    candidates.push(caretOffset);
+  }
+  if (caretOffset > 0 && caretOffset - 1 < text.length) {
+    candidates.push(caretOffset - 1);
+  }
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const index = candidates[i];
+    const ch = text[index];
+    if (!isOpeningBracket(ch) && !isClosingBracket(ch)) {
+      continue;
+    }
+    const pair = findMatchingBracket(text, index);
+    if (pair == null) {
+      continue;
+    }
+    return {
+      left: Math.min(index, pair),
+      right: Math.max(index, pair),
+    };
+  }
+
+  return null;
+}
+
 function resetSlashMode() {
   overlayInputMode.active = false;
   overlayInputMode.start = null;
@@ -319,6 +441,20 @@ function buildEditorHighlightHtml(text, spans, typeHints) {
         end: activeEnd,
         kind: 'hl-slash-mode-active',
       });
+    }
+  }
+
+  const bracketHighlight = resolveBracketHighlight(sourceText, editorInput.selectionStart ?? 0);
+  if (bracketHighlight) {
+    const leftStart = projection.rawToDisplay[bracketHighlight.left];
+    const leftEnd = projection.rawToDisplay[bracketHighlight.left + 1];
+    const rightStart = projection.rawToDisplay[bracketHighlight.right];
+    const rightEnd = projection.rawToDisplay[bracketHighlight.right + 1];
+    if (leftEnd > leftStart) {
+      validSpans.push({ start: leftStart, end: leftEnd, kind: 'hl-bracket-match' });
+    }
+    if (rightEnd > rightStart) {
+      validSpans.push({ start: rightStart, end: rightEnd, kind: 'hl-bracket-match' });
     }
   }
 
@@ -786,6 +922,27 @@ editorInput.addEventListener('keydown', (event) => {
     return;
   }
 
+  if (isOpeningBracket(event.key)) {
+    event.preventDefault();
+    const open = event.key;
+    const close = matchingBracket(open);
+    const start = selectionStart;
+    const end = selectionEnd;
+    const selected = text.slice(start, end);
+    const nextText = text.slice(0, start) + open + selected + close + text.slice(end);
+    const nextCaret = selected.length > 0 ? start + selected.length + 1 : start + 1;
+    applyEditorTextChange(nextText, nextCaret);
+    return;
+  }
+
+  if (isClosingBracket(event.key) && selectionStart === selectionEnd && shouldSkipExistingClosing(text, selectionStart, event.key)) {
+    event.preventDefault();
+    editorInput.setSelectionRange(selectionStart + 1, selectionStart + 1);
+    renderEditorWithCurrentHighlights();
+    notifyCaretMoved();
+    return;
+  }
+
   if (event.key === '\\' && selectionStart === selectionEnd) {
     event.preventDefault();
     enterSlashMode(selectionStart);
@@ -799,6 +956,30 @@ editorInput.addEventListener('keydown', (event) => {
 
   if ((event.key !== 'Backspace' && event.key !== 'Delete')) {
     return;
+  }
+
+  if (event.key === 'Backspace' && selectionStart > 0) {
+    const left = text[selectionStart - 1];
+    if (isOpeningBracket(left) && text[selectionStart] === matchingBracket(left)) {
+      event.preventDefault();
+      applyEditorTextChange(
+        text.slice(0, selectionStart - 1) + text.slice(selectionStart + 1),
+        selectionStart - 1,
+      );
+      return;
+    }
+  }
+
+  if (event.key === 'Delete' && selectionStart < text.length) {
+    const current = text[selectionStart];
+    if (isOpeningBracket(current) && text[selectionStart + 1] === matchingBracket(current)) {
+      event.preventDefault();
+      applyEditorTextChange(
+        text.slice(0, selectionStart) + text.slice(selectionStart + 2),
+        selectionStart,
+      );
+      return;
+    }
   }
 
   if (event.key === 'Backspace') {

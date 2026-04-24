@@ -184,6 +184,12 @@ body {
   text-underline-offset: 2px;
 }
 
+.hl-bracket-match {
+  font-weight: 700;
+  background: rgba(255, 177, 115, 0.15);
+  border-radius: 2px;
+}
+
 .hl-slash-mode-active {
   text-decoration-line: underline;
   text-decoration-thickness: 1px;
