@@ -40,7 +40,8 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         val knownConstantsBeforeSelected = document.definitions
             .take(selectedIndex)
             .map { it.name }
-            .toSet()
+            .toMutableSet()
+            .apply { add("Type") }
 
         val selectedTerm = selected.implementation ?: selected.type
         if (selectedTerm == null) {
@@ -90,7 +91,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         caretOffset: Int?,
     ): List<TextHighlight> {
         val collector = SymbolCollector()
-        val knownConstants = linkedSetOf<String>()
+        val knownConstants = linkedSetOf<String>("Type")
         document.definitions.forEach { definition ->
             definition.type?.let { collector.collect(it, linkedMapOf(), knownConstants) }
             definition.implementation?.let { collector.collect(it, linkedMapOf(), knownConstants) }
