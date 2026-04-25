@@ -5,6 +5,8 @@
       diagnostics: [],
       textHighlights: [],
       typeHints: [],
+      activeTypeCheckTrace: null,
+      activeEvaluationTrace: null,
       symbolReplacements: {},
       definitionNames: [],
       selectedDefinitionName: null,

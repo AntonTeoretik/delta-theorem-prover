@@ -605,6 +605,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             name = ruleName,
             lhs = lhs,
             rhs = rhs,
+            keywordSpan = TextSpan(ruleKeyword.startOffset, ruleKeyword.endOffset),
             nameSpan = ruleNameSpan,
         )
     }

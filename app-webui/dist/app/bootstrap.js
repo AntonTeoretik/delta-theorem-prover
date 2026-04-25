@@ -10,7 +10,10 @@
     const stats = document.getElementById('stats');
     const reportOutput = document.getElementById('reportOutput');
     const compactToggle = document.getElementById('compactToggle');
+    const evaluationToggle = document.getElementById('evaluationToggle');
     const definitionBar = document.getElementById('definitionBar');
+    const evaluationWrap = document.getElementById('evaluationWrap');
+    const evaluationOutput = document.getElementById('evaluationOutput');
     const ctx = canvas.getContext('2d');
 
     const bridgeApi = global.DeltaBridge;
@@ -25,6 +28,7 @@
     const inputHandlersApi = global.DeltaEditorInputHandlers;
     const graphInteractionsApi = global.DeltaGraphInteractions;
     const reportPanelApi = global.DeltaReportPanel;
+    const evaluationPanelApi = global.DeltaEvaluationPanel;
 
     if (!bridgeApi
       || !definitionBarApi
@@ -37,7 +41,8 @@
       || !caretOverlayApi
       || !inputHandlersApi
       || !graphInteractionsApi
-      || !reportPanelApi) {
+      || !reportPanelApi
+      || !evaluationPanelApi) {
       stats.textContent = 'UI initialization failed: script module missing';
       throw new Error('Delta web UI bootstrap failed: missing global module');
     }
@@ -78,6 +83,7 @@
     const { attachEditorInputHandlers } = inputHandlersApi;
     const { attachGraphInteractions } = graphInteractionsApi;
     const { renderDiagnosticsReport } = reportPanelApi;
+    const { renderEvaluationPanel } = evaluationPanelApi;
 
     const elements = {
       editorInput,
@@ -87,6 +93,8 @@
       editorCaretOverlay,
       hoverTooltip,
       reportOutput,
+      evaluationWrap,
+      evaluationOutput,
     };
     const view = createViewState();
     const state = createAppState();
@@ -167,6 +175,7 @@
       state.renderedPayload = compactify(state.lastPayload, compactToggle.checked);
       renderDefinitionBar(definitionBar, state.renderedPayload, notifyHostDefinitionSelected);
       renderDiagnosticsReport(reportOutput, state.renderedPayload);
+      renderEvaluationPanel(evaluationWrap, evaluationOutput, state.renderedPayload, Boolean(evaluationToggle?.checked));
 
       if (resetView) {
         renderer.fitToContent(state.renderedPayload);
@@ -232,6 +241,10 @@
 
     compactToggle.addEventListener('change', () => {
       renderCurrent(true);
+    });
+
+    evaluationToggle?.addEventListener('change', () => {
+      renderCurrent(false);
     });
 
     window.addEventListener('resize', () => {

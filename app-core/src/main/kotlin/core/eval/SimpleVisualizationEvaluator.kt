@@ -14,7 +14,7 @@ import core.typecheck.TypeChecker
 
 class SimpleVisualizationEvaluator : VisualizationEvaluator {
     override fun evaluate(document: ParsedDocument, selectedDefinitionName: String?, caretOffset: Int?): VisualizationData {
-        val typeCheck = TypeChecker(document).checkProgram()
+        val typeCheck = TypeChecker(document, caretOffset).checkProgram()
         val allDiagnostics = document.diagnostics + typeCheck.diagnostics
         val definitionNames = document.definitions.map { it.name }
         val textHighlights = buildTextHighlights(document, allDiagnostics, caretOffset)
@@ -25,6 +25,8 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 diagnostics = allDiagnostics,
                 textHighlights = textHighlights,
                 typeHints = typeCheck.typeHints,
+                activeTypeCheckTrace = typeCheck.activeTrace,
+                activeEvaluationTrace = typeCheck.activeEvaluationTrace,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
                 definitionNames = definitionNames,
@@ -50,6 +52,8 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 diagnostics = allDiagnostics,
                 textHighlights = textHighlights,
                 typeHints = typeCheck.typeHints,
+                activeTypeCheckTrace = typeCheck.activeTrace,
+                activeEvaluationTrace = typeCheck.activeEvaluationTrace,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
                 definitionNames = definitionNames,
@@ -73,6 +77,8 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             diagnostics = allDiagnostics,
             textHighlights = textHighlights,
             typeHints = typeCheck.typeHints,
+            activeTypeCheckTrace = typeCheck.activeTrace,
+            activeEvaluationTrace = typeCheck.activeEvaluationTrace,
             symbolReplacements = SymbolDisplay.symbolReplacements,
             infixDeclarations = document.infixDeclarations,
             definitionNames = definitionNames,
@@ -112,6 +118,10 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             definition.nameSpan?.let { span ->
                 highlights += TextHighlight(span, TextHighlightKind.DEFINITION_NAME)
             }
+        }
+        document.rewriteRules.forEach { rule ->
+            highlights += TextHighlight(rule.keywordSpan, TextHighlightKind.RULE_KEYWORD)
+            highlights += TextHighlight(rule.nameSpan, TextHighlightKind.RULE_NAME)
         }
         collector.freeVariableSpans.forEach { span ->
             highlights += TextHighlight(span, TextHighlightKind.FREE_VARIABLE)

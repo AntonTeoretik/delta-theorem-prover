@@ -2,10 +2,13 @@ package core.typecheck
 
 import core.model.Definition
 import core.model.Diagnostic
+import core.model.EvaluationStep
+import core.model.EvaluationTrace
 import core.model.ParsedDocument
 import core.model.RewriteRule
 import core.model.Term
 import core.model.TextSpan
+import core.model.TypeCheckTrace
 import core.model.TypeHint
 import java.util.IdentityHashMap
 
@@ -13,9 +16,14 @@ data class TypeCheckResult(
     val diagnostics: List<Diagnostic>,
     val inferredTypes: Map<Term, Term>,
     val typeHints: List<TypeHint>,
+    val activeTrace: TypeCheckTrace?,
+    val activeEvaluationTrace: EvaluationTrace?,
 )
 
-class TypeChecker(private val document: ParsedDocument) {
+class TypeChecker(
+    private val document: ParsedDocument,
+    private val caretOffset: Int? = null,
+) {
     private val diagnostics = mutableListOf<Diagnostic>()
     private val globals = linkedMapOf<String, GlobalEntry>()
     private val source = document.sourceText
@@ -24,6 +32,7 @@ class TypeChecker(private val document: ParsedDocument) {
     private val typeHintKeys = linkedSetOf<String>()
     private val rewriteRulesByHead = linkedMapOf<String, MutableList<RegisteredRewriteRule>>()
     private var nextTypeHintId: Int = 0
+    private var traceSink: MutableList<String>? = null
 
     init {
         val type = typeUniverseTerm()
@@ -31,16 +40,46 @@ class TypeChecker(private val document: ParsedDocument) {
     }
 
     fun checkProgram(): TypeCheckResult {
-        topLevelEntries().forEach { entry ->
+        val entries = topLevelEntries()
+        var activeTrace: TypeCheckTrace? = null
+        var activeEvaluationTrace: EvaluationTrace? = null
+
+        entries.forEachIndexed { index, entry ->
+            val nextStart = entries.getOrNull(index + 1)?.startOffset ?: source.length + 1
+            val isActive = caretOffset != null && caretOffset >= entry.startOffset && caretOffset < nextStart
+            val localTrace = if (isActive) mutableListOf<String>() else null
+            traceSink = localTrace
+
             when (entry) {
                 is TopLevelEntry.DefinitionEntry -> checkDefinition(entry.definition)
                 is TopLevelEntry.RuleEntry -> checkRewriteRule(entry.rule)
             }
+
+            if (isActive) {
+                val title = when (entry) {
+                    is TopLevelEntry.DefinitionEntry -> "definition ${entry.definition.name}"
+                    is TopLevelEntry.RuleEntry -> "rule ${entry.rule.name}"
+                }
+                val line = offsetToLineColumn(entry.startOffset).first
+                activeTrace = TypeCheckTrace(
+                    title = title,
+                    line = line,
+                    steps = localTrace?.toList().orEmpty(),
+                )
+                activeEvaluationTrace = when (entry) {
+                    is TopLevelEntry.DefinitionEntry -> buildEvaluationTrace(entry.definition)
+                    is TopLevelEntry.RuleEntry -> null
+                }
+            }
+
+            traceSink = null
         }
         return TypeCheckResult(
             diagnostics = diagnostics.toList(),
             inferredTypes = IdentityHashMap(inferredTypes),
             typeHints = typeHints.toList(),
+            activeTrace = activeTrace,
+            activeEvaluationTrace = activeEvaluationTrace,
         )
     }
 
@@ -64,47 +103,63 @@ class TypeChecker(private val document: ParsedDocument) {
         val declaredType = definition.type
         val implementation = definition.implementation
 
+        traceStep("check definition '${definition.name}'")
+
         if (declaredType == null && implementation == null) {
             report(definition.nameSpan, "Definition '${definition.name}' must have type or implementation")
+            traceStep("error: missing both type and implementation")
             return
         }
 
         if (declaredType != null) {
+            traceStep("infer declared type kind")
             inferType(declaredType, emptyMap())
         }
 
+        if (implementation != null) {
+            traceStep("infer implementation type")
+        }
         val implementationType = implementation?.let { inferType(it, emptyMap()) }
 
         if (declaredType != null && implementationType != null) {
+            traceStep("check convertibility declared ~ inferred")
             if (!convertible(implementationType, declaredType)) {
                 report(
                     definition.nameSpan,
                     "Definition '${definition.name}' has type mismatch. Declared: ${pretty(declaredType)}, inferred: ${pretty(implementationType)}",
                 )
+                traceStep("convertibility failed")
+            } else {
+                traceStep("convertibility ok")
             }
         }
 
         val finalType = declaredType ?: implementationType
         if (finalType != null) {
             globals[definition.name] = GlobalEntry(type = finalType, implementation = implementation)
+            traceStep("register global '${definition.name}'")
         }
     }
 
     private fun checkRewriteRule(rule: RewriteRule) {
+        traceStep("check rule '${rule.name}'")
         val (head, args) = decomposeApplication(rule.lhs)
         if (head !is Term.Variable || args.isEmpty()) {
             report(rule.nameSpan, "Rule '${rule.name}': LHS must be an application of a constant")
+            traceStep("error: lhs is not a constant application")
             return
         }
 
         val headEntry = globals[head.name]
         if (headEntry == null) {
             report(rule.nameSpan, "Rule '${rule.name}': Unknown constant '${head.name}' on LHS")
+            traceStep("error: unknown constant '${head.name}'")
             return
         }
 
         if (headEntry.implementation != null) {
             report(rule.nameSpan, "Rule '${rule.name}': '${head.name}' is not axiomatic (it has ':=')")
+            traceStep("error: '${head.name}' is not axiomatic")
             return
         }
 
@@ -112,11 +167,14 @@ class TypeChecker(private val document: ParsedDocument) {
         var currentType: Term = normalize(headEntry.type)
         var valid = true
 
+        traceStep("lhs head constant: ${head.name}")
+
         args.forEach { argument ->
             val functionType = normalize(currentType)
             if (functionType !is Term.Pi) {
                 report(rule.nameSpan, "Rule '${rule.name}': too many arguments on LHS for '${head.name}'")
                 valid = false
+                traceStep("error: too many lhs arguments")
                 return@forEach
             }
 
@@ -129,20 +187,26 @@ class TypeChecker(private val document: ParsedDocument) {
         }
 
         if (!valid) {
+            traceStep("rule rejected during lhs pattern typing")
             return
         }
 
         val lhsType = inferType(rule.lhs, patternLocals) ?: currentType
         val rhsType = inferType(rule.rhs, patternLocals)
         if (rhsType == null) {
+            traceStep("rule rejected: cannot infer rhs type")
             return
         }
+
+        traceStep("lhs type: ${pretty(lhsType)}")
+        traceStep("rhs type: ${pretty(rhsType)}")
 
         if (!convertible(lhsType, rhsType)) {
             report(
                 rule.nameSpan,
                 "Rule '${rule.name}' type mismatch: lhs has ${pretty(lhsType)}, rhs has ${pretty(rhsType)}",
             )
+            traceStep("rule rejected: lhs/rhs types not convertible")
             return
         }
 
@@ -154,6 +218,7 @@ class TypeChecker(private val document: ParsedDocument) {
                 rule.nameSpan,
                 "Rule '${rule.name}' is not closed: RHS variables not in LHS: ${missing.sorted().joinToString(", ")}",
             )
+            traceStep("rule rejected: rhs variables not in lhs")
             return
         }
 
@@ -168,6 +233,7 @@ class TypeChecker(private val document: ParsedDocument) {
                     patternVariables = lhsVariables,
                 ),
             )
+        traceStep("register rewrite rule for '${head.name}'")
     }
 
     private fun checkRulePatternAgainstExpectedType(
@@ -358,14 +424,20 @@ class TypeChecker(private val document: ParsedDocument) {
     }
 
     private fun defEq(a: Term, b: Term): Boolean {
+        traceStep("defEq: ${pretty(a)} ~ ${pretty(b)}")
         val wa = whnf(a)
         val wb = whnf(b)
 
         if (structuralDefEq(wa, wb)) {
+            traceStep("defEq success at whnf")
             return true
         }
 
-        return alphaEquivalent(normalize(a), normalize(b))
+        val na = normalize(a)
+        val nb = normalize(b)
+        val ok = alphaEquivalent(na, nb)
+        traceStep("defEq fallback normalize: ${pretty(na)} ~ ${pretty(nb)} => $ok")
+        return ok
     }
 
     private fun structuralDefEq(a: Term, b: Term): Boolean {
@@ -446,9 +518,10 @@ class TypeChecker(private val document: ParsedDocument) {
                     whnf(substitute(fn.body, fn.parameter, term.argument), unfolding)
                 } else {
                     val candidate = Term.Application(fn, term.argument)
-                    val rewritten = rewriteAtRoot(candidate)
-                    if (rewritten != null) {
-                        whnf(rewritten, unfolding)
+                    val rewrite = rewriteAtRoot(candidate)
+                    if (rewrite != null) {
+                        traceStep("whnf rewrite: ${rewrite.ruleName}")
+                        whnf(rewrite.term, unfolding)
                     } else {
                         candidate
                     }
@@ -513,12 +586,133 @@ class TypeChecker(private val document: ParsedDocument) {
     private fun applyRewriteRules(term: Term, unfolding: MutableSet<String>): Term {
         var current = term
         while (true) {
-            val rewritten = rewriteAtRoot(current) ?: return current
-            current = normalize(rewritten, unfolding)
+            val rewrite = rewriteAtRoot(current) ?: return current
+            traceStep("normalize rewrite: ${rewrite.ruleName}")
+            current = normalize(rewrite.term, unfolding)
         }
     }
 
-    private fun rewriteAtRoot(term: Term): Term? {
+    private fun buildEvaluationTrace(definition: Definition): EvaluationTrace? {
+        val implementation = definition.implementation ?: return null
+        val startOffset = definition.nameSpan?.startOffset ?: 0
+        val line = offsetToLineColumn(startOffset).first
+        val steps = mutableListOf<EvaluationStep>()
+        var current = implementation
+        var counter = 0
+
+        while (counter < EVALUATION_STEP_LIMIT) {
+            val outcome = reduceOneStep(current) ?: break
+            steps += EvaluationStep(
+                reason = outcome.reason,
+                from = pretty(current),
+                to = pretty(outcome.term),
+            )
+            current = outcome.term
+            counter += 1
+        }
+
+        return EvaluationTrace(
+            title = definition.name,
+            line = line,
+            steps = steps,
+        )
+    }
+
+    private fun reduceOneStep(term: Term, unfolding: MutableSet<String> = linkedSetOf()): ReductionOutcome? {
+        return when (term) {
+            is Term.Meta,
+            is Term.Constant,
+            -> {
+                val name = (term as? Term.Constant)?.name
+                if (name != null) {
+                    val impl = globals[name]?.implementation
+                    if (impl != null && unfolding.add(name)) {
+                        ReductionOutcome(impl, "unfold $name")
+                    } else {
+                        null
+                    }
+                } else {
+                    null
+                }
+            }
+
+            is Term.Variable -> {
+                val impl = globals[term.name]?.implementation
+                if (impl != null && unfolding.add(term.name)) {
+                    ReductionOutcome(impl, "unfold ${term.name}")
+                } else {
+                    null
+                }
+            }
+
+            is Term.Typed -> {
+                val reducedTerm = reduceOneStep(term.term, unfolding)
+                if (reducedTerm != null) {
+                    ReductionOutcome(Term.Typed(reducedTerm.term, term.type), "in annotation: ${reducedTerm.reason}")
+                } else {
+                    val reducedType = reduceOneStep(term.type, unfolding) ?: return null
+                    ReductionOutcome(Term.Typed(term.term, reducedType.term), "in annotation type: ${reducedType.reason}")
+                }
+            }
+
+            is Term.Pi -> {
+                val reducedType = reduceOneStep(term.parameterType, unfolding)
+                if (reducedType != null) {
+                    ReductionOutcome(term.copy(parameterType = reducedType.term), "in Pi domain: ${reducedType.reason}")
+                } else {
+                    val reducedBody = reduceOneStep(term.body, unfolding) ?: return null
+                    ReductionOutcome(term.copy(body = reducedBody.term), "in Pi body: ${reducedBody.reason}")
+                }
+            }
+
+            is Term.Lambda -> {
+                val reducedType = reduceOneStep(term.parameterType, unfolding)
+                if (reducedType != null) {
+                    ReductionOutcome(term.copy(parameterType = reducedType.term), "in lambda domain: ${reducedType.reason}")
+                } else {
+                    val reducedBody = reduceOneStep(term.body, unfolding) ?: return null
+                    ReductionOutcome(term.copy(body = reducedBody.term), "in lambda body: ${reducedBody.reason}")
+                }
+            }
+
+            is Term.Application -> {
+                val reducedFunction = reduceOneStep(term.function, unfolding)
+                if (reducedFunction != null) {
+                    return ReductionOutcome(
+                        term = Term.Application(reducedFunction.term, term.argument),
+                        reason = "in function: ${reducedFunction.reason}",
+                    )
+                }
+
+                if (term.function is Term.Lambda) {
+                    return ReductionOutcome(
+                        term = substitute(term.function.body, term.function.parameter, term.argument),
+                        reason = "beta",
+                    )
+                }
+
+                val rewrite = rewriteAtRoot(term)
+                if (rewrite != null) {
+                    return ReductionOutcome(
+                        term = rewrite.term,
+                        reason = "rewrite ${rewrite.ruleName}",
+                    )
+                }
+
+                val reducedArgument = reduceOneStep(term.argument, unfolding)
+                if (reducedArgument != null) {
+                    return ReductionOutcome(
+                        term = Term.Application(term.function, reducedArgument.term),
+                        reason = "in argument: ${reducedArgument.reason}",
+                    )
+                }
+
+                null
+            }
+        }
+    }
+
+    private fun rewriteAtRoot(term: Term): RewriteOutcome? {
         val (head, _) = decomposeApplication(term)
         val headName = when (head) {
             is Term.Variable -> head.name
@@ -530,7 +724,7 @@ class TypeChecker(private val document: ParsedDocument) {
         rules.forEach { rule ->
             val substitutions = linkedMapOf<String, Term>()
             if (matchRewritePattern(rule.lhs, term, rule.patternVariables, substitutions)) {
-                return instantiateRuleRhs(rule.rhs, substitutions)
+                return RewriteOutcome(ruleName = rule.name, term = instantiateRuleRhs(rule.rhs, substitutions))
             }
         }
 
@@ -780,6 +974,9 @@ class TypeChecker(private val document: ParsedDocument) {
     private fun pretty(term: Term): String = prettyTerm(term)
 
     companion object {
+        const val TRACE_STEP_LIMIT: Int = 400
+        const val EVALUATION_STEP_LIMIT: Int = 80
+
         fun prettyTerm(term: Term): String {
             return when (term) {
                 is Term.Meta -> "?m${term.id}"
@@ -816,6 +1013,17 @@ class TypeChecker(private val document: ParsedDocument) {
         )
     }
 
+    private fun traceStep(message: String) {
+        val sink = traceSink ?: return
+        if (sink.size >= TRACE_STEP_LIMIT) {
+            if (sink.lastOrNull() != "... trace truncated ...") {
+                sink += "... trace truncated ..."
+            }
+            return
+        }
+        sink += message
+    }
+
     private fun offsetToLineColumn(offset: Int): Pair<Int, Int> {
         val safe = offset.coerceAtLeast(0).coerceAtMost(source.length)
         var line = 1
@@ -847,6 +1055,16 @@ class TypeChecker(private val document: ParsedDocument) {
         val patternVariables: Set<String>,
     )
 
+    private data class RewriteOutcome(
+        val ruleName: String,
+        val term: Term,
+    )
+
+    private data class ReductionOutcome(
+        val term: Term,
+        val reason: String,
+    )
+
     private sealed interface TopLevelEntry {
         val startOffset: Int
 
@@ -860,4 +1078,5 @@ class TypeChecker(private val document: ParsedDocument) {
             val rule: RewriteRule,
         ) : TopLevelEntry
     }
+
 }

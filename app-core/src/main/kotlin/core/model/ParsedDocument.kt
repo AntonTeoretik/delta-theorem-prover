@@ -11,6 +11,7 @@ data class RewriteRule(
     val name: String,
     val lhs: Term,
     val rhs: Term,
+    val keywordSpan: TextSpan,
     val nameSpan: TextSpan,
 )
 

@@ -31,6 +31,24 @@ data class TypeHint(
     val type: String,
 )
 
+data class TypeCheckTrace(
+    val title: String,
+    val line: Int,
+    val steps: List<String>,
+)
+
+data class EvaluationStep(
+    val reason: String,
+    val from: String,
+    val to: String,
+)
+
+data class EvaluationTrace(
+    val title: String,
+    val line: Int,
+    val steps: List<EvaluationStep>,
+)
+
 data class TermEdge(
     val id: String,
     val fromNodeId: String,
@@ -44,6 +62,8 @@ data class VisualizationData(
     val diagnostics: List<Diagnostic>,
     val textHighlights: List<TextHighlight>,
     val typeHints: List<TypeHint>,
+    val activeTypeCheckTrace: TypeCheckTrace?,
+    val activeEvaluationTrace: EvaluationTrace?,
     val symbolReplacements: Map<String, String>,
     val infixDeclarations: List<InfixDeclaration>,
     val definitionNames: List<String>,

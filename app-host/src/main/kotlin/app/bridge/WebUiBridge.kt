@@ -1,10 +1,13 @@
 package app.bridge
 
 import core.model.Diagnostic
+import core.model.EvaluationStep
+import core.model.EvaluationTrace
 import core.model.InfixDeclaration
 import core.model.TermEdge
 import core.model.TextHighlight
 import core.model.TermNode
+import core.model.TypeCheckTrace
 import core.model.TypeHint
 import core.model.VisualizationData
 import org.cef.browser.CefBrowser
@@ -59,6 +62,8 @@ class WebUiBridge(private val browser: CefBrowser) {
         val diagnosticsJson = diagnostics.joinToString(",") { it.toJson() }
         val textHighlightsJson = textHighlights.joinToString(",") { it.toJson() }
         val typeHintsJson = typeHints.joinToString(",") { it.toJson() }
+        val activeTraceJson = activeTypeCheckTrace?.toJson() ?: "null"
+        val activeEvaluationTraceJson = activeEvaluationTrace?.toJson() ?: "null"
         val symbolReplacementsJson = symbolReplacements.entries.joinToString(",") { (from, to) ->
             "\"${escapeJson(from)}\":\"${escapeJson(to)}\""
         }
@@ -79,6 +84,8 @@ class WebUiBridge(private val browser: CefBrowser) {
               "diagnostics":[$diagnosticsJson],
               "textHighlights":[$textHighlightsJson],
               "typeHints":[$typeHintsJson],
+              "activeTypeCheckTrace":$activeTraceJson,
+              "activeEvaluationTrace":$activeEvaluationTraceJson,
               "symbolReplacements":{$symbolReplacementsJson},
               "infixDeclarations":[$infixDeclarationsJson],
               "definitionNames":[$definitionsJson],
@@ -104,6 +111,20 @@ class WebUiBridge(private val browser: CefBrowser) {
 
     private fun TypeHint.toJson(): String {
         return """{"id":"${escapeJson(id)}","startOffset":${span.startOffset},"endOffset":${span.endOffset},"type":"${escapeJson(type)}"}"""
+    }
+
+    private fun TypeCheckTrace.toJson(): String {
+        val stepsJson = steps.joinToString(",") { "\"${escapeJson(it)}\"" }
+        return """{"title":"${escapeJson(title)}","line":$line,"steps":[$stepsJson]}"""
+    }
+
+    private fun EvaluationStep.toJson(): String {
+        return """{"reason":"${escapeJson(reason)}","from":"${escapeJson(from)}","to":"${escapeJson(to)}"}"""
+    }
+
+    private fun EvaluationTrace.toJson(): String {
+        val stepsJson = steps.joinToString(",") { it.toJson() }
+        return """{"title":"${escapeJson(title)}","line":$line,"steps":[$stepsJson]}"""
     }
 
     private fun InfixDeclaration.toJson(): String {
