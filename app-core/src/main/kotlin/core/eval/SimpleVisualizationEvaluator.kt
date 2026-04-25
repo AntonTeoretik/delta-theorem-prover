@@ -97,6 +97,10 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             definition.implementation?.let { collector.collect(it, linkedMapOf(), knownConstants) }
             knownConstants += definition.name
         }
+        document.rewriteRules.forEach { rule ->
+            collector.collect(rule.lhs, linkedMapOf(), knownConstants)
+            collector.collect(rule.rhs, linkedMapOf(), knownConstants)
+        }
 
         val highlights = mutableListOf<TextHighlight>()
         collector.constantSpans.forEach { (_, spans) ->

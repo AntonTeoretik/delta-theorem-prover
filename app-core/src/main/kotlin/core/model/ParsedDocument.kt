@@ -7,6 +7,13 @@ data class Definition(
     val nameSpan: TextSpan?,
 )
 
+data class RewriteRule(
+    val name: String,
+    val lhs: Term,
+    val rhs: Term,
+    val nameSpan: TextSpan,
+)
+
 enum class InfixAssociativity {
     LEFT,
     RIGHT,
@@ -22,6 +29,7 @@ data class InfixDeclaration(
 data class ParsedDocument(
     val sourceText: String,
     val definitions: List<Definition>,
+    val rewriteRules: List<RewriteRule> = emptyList(),
     val infixDeclarations: List<InfixDeclaration> = emptyList(),
     val diagnostics: List<Diagnostic> = emptyList(),
 )

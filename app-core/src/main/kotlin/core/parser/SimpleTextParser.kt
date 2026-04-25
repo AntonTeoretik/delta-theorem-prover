@@ -5,6 +5,7 @@ import core.model.Diagnostic
 import core.model.InfixAssociativity
 import core.model.InfixDeclaration
 import core.model.ParsedDocument
+import core.model.RewriteRule
 import core.model.SymbolDisplay
 import core.model.Term
 import core.model.TextSpan
@@ -23,6 +24,7 @@ class SimpleTextParser : TextParser {
         return ParsedDocument(
             sourceText = normalized,
             definitions = parseResult.definitions,
+            rewriteRules = parseResult.rewriteRules,
             infixDeclarations = parseResult.infixDeclarations,
             diagnostics = diagnostics,
         )
@@ -39,6 +41,7 @@ private enum class TokenType {
     FORALL,
     ARROW,
     FAT_ARROW,
+    REWRITE_ARROW,
     DOT,
     LPAREN,
     RPAREN,
@@ -61,6 +64,7 @@ private data class Token(
 
 private data class ParseResult(
     val definitions: List<Definition>,
+    val rewriteRules: List<RewriteRule>,
     val infixDeclarations: List<InfixDeclaration>,
     val diagnostics: List<Diagnostic>,
 )
@@ -83,6 +87,7 @@ private class TermLexer(private val source: String) {
                 ch == 'λ' -> tokens.add(singleToken(TokenType.LAMBDA, "λ"))
                 ch == '∀' -> tokens.add(singleToken(TokenType.FORALL, "∀"))
                 ch == '→' -> tokens.add(singleToken(TokenType.ARROW, "→"))
+                ch == '↦' -> tokens.add(singleToken(TokenType.REWRITE_ARROW, "↦"))
                 ch == '=' && index + 1 < source.length && source[index + 1] == '>' -> tokens.add(readFatArrow())
                 ch.isCommittedSymbolConstant() -> tokens.add(singleToken(TokenType.SYMBOLIC_IDENT, ch.toString()))
                 ch == '.' -> tokens.add(singleToken(TokenType.DOT, "."))
@@ -343,6 +348,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
     private val infixDeclarations = mutableListOf<InfixDeclaration>()
     private val infixByName = linkedMapOf<String, InfixDeclaration>()
+    private val rewriteRules = mutableListOf<RewriteRule>()
 
     fun parseProgramOrTerm(): ParseResult {
         val diagnostics = mutableListOf<Diagnostic>()
@@ -351,6 +357,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         if (isAtEnd()) {
             return ParseResult(
                 definitions = emptyList(),
+                rewriteRules = emptyList(),
                 infixDeclarations = infixDeclarations.toList(),
                 diagnostics = diagnostics,
             )
@@ -372,6 +379,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             }
             return ParseResult(
                 definitions = definitions,
+                rewriteRules = rewriteRules.toList(),
                 infixDeclarations = infixDeclarations.toList(),
                 diagnostics = diagnostics,
             )
@@ -398,12 +406,17 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             } else {
                 listOf(Definition(name = "main", type = null, implementation = term, nameSpan = null))
             },
+            rewriteRules = emptyList(),
             infixDeclarations = infixDeclarations.toList(),
             diagnostics = diagnostics + termDiagnostics,
         )
     }
 
     private fun shouldParseDefinitions(): Boolean {
+        if (isRuleStart()) {
+            return true
+        }
+
         if (!isDefinitionStart()) {
             return false
         }
@@ -422,6 +435,15 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         while (isDirectiveKeyword(peek())) {
             parseInfixDirective(diagnostics)
         }
+    }
+
+    private fun isRuleStart(): Boolean {
+        val token = peek()
+        return isRuleKeyword(token) && isDefinitionNameToken(peek(1))
+    }
+
+    private fun isRuleKeyword(token: Token): Boolean {
+        return token.type == TokenType.IDENT && token.text == "rule"
     }
 
     private fun parseInfixDirective(diagnostics: MutableList<Diagnostic>) {
@@ -502,6 +524,11 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 continue
             }
 
+            if (isRuleStart()) {
+                parseRule(diagnostics)
+                continue
+            }
+
             if (!isDefinitionStart()) {
                 val token = peek()
                 diagnostics.add(
@@ -552,6 +579,76 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         }
 
         return definitions
+    }
+
+    private fun parseRule(diagnostics: MutableList<Diagnostic>) {
+        val ruleKeyword = advance()
+        if (!isRuleKeyword(ruleKeyword)) {
+            diagnostics += Diagnostic(
+                message = "Expected 'rule' keyword",
+                line = ruleKeyword.line,
+                column = ruleKeyword.column,
+                startOffset = ruleKeyword.startOffset,
+                endOffset = ruleKeyword.endOffset,
+            )
+            return
+        }
+
+        val (ruleName, ruleNameSpan) = parseRuleName(diagnostics)
+        consume(TokenType.COLON, "Expected ':' after rule name", diagnostics)
+        val lhs = parseExpression(diagnostics)
+        consumeRewriteArrow(diagnostics)
+        val rhs = parseExpression(diagnostics)
+        consume(TokenType.SEMICOLON, "Expected ';' after rule", diagnostics)
+
+        rewriteRules += RewriteRule(
+            name = ruleName,
+            lhs = lhs,
+            rhs = rhs,
+            nameSpan = ruleNameSpan,
+        )
+    }
+
+    private fun parseRuleName(diagnostics: MutableList<Diagnostic>): Pair<String, TextSpan> {
+        val first = consume(TokenType.IDENT, "Expected rule name after 'rule'", diagnostics)
+        val builder = StringBuilder(first.text)
+        var last = first
+
+        while (match(TokenType.DOT)) {
+            val segment = consume(TokenType.IDENT, "Expected identifier after '.' in rule name", diagnostics)
+            if (builder.isNotEmpty()) {
+                builder.append('.')
+            }
+            builder.append(segment.text)
+            last = segment
+        }
+
+        val name = builder.toString().ifBlank { "rule" }
+        return name to TextSpan(first.startOffset, last.endOffset)
+    }
+
+    private fun consumeRewriteArrow(diagnostics: MutableList<Diagnostic>): Token {
+        if (match(TokenType.REWRITE_ARROW)) {
+            return previous()
+        }
+
+        if (check(TokenType.SYMBOLIC_IDENT) && peek().text == "↦") {
+            return advance()
+        }
+
+        if (check(TokenType.BACKSLASH_CONST) && peek().text == "\\mapsto") {
+            return advance()
+        }
+
+        val token = peek()
+        diagnostics += Diagnostic(
+            message = "Expected '↦' in rule declaration",
+            line = token.line,
+            column = token.column,
+            startOffset = token.startOffset,
+            endOffset = token.endOffset,
+        )
+        return Token(TokenType.REWRITE_ARROW, "", token.line, token.column, token.startOffset, token.endOffset)
     }
 
     private fun parseExpression(diagnostics: MutableList<Diagnostic>, minPrecedence: Int = 0): Term {

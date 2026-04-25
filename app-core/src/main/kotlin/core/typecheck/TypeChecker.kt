@@ -3,6 +3,7 @@ package core.typecheck
 import core.model.Definition
 import core.model.Diagnostic
 import core.model.ParsedDocument
+import core.model.RewriteRule
 import core.model.Term
 import core.model.TextSpan
 import core.model.TypeHint
@@ -21,6 +22,7 @@ class TypeChecker(private val document: ParsedDocument) {
     private val inferredTypes = IdentityHashMap<Term, Term>()
     private val typeHints = mutableListOf<TypeHint>()
     private val typeHintKeys = linkedSetOf<String>()
+    private val rewriteRulesByHead = linkedMapOf<String, MutableList<RegisteredRewriteRule>>()
     private var nextTypeHintId: Int = 0
 
     init {
@@ -29,14 +31,33 @@ class TypeChecker(private val document: ParsedDocument) {
     }
 
     fun checkProgram(): TypeCheckResult {
-        document.definitions.forEach { definition ->
-            checkDefinition(definition)
+        topLevelEntries().forEach { entry ->
+            when (entry) {
+                is TopLevelEntry.DefinitionEntry -> checkDefinition(entry.definition)
+                is TopLevelEntry.RuleEntry -> checkRewriteRule(entry.rule)
+            }
         }
         return TypeCheckResult(
             diagnostics = diagnostics.toList(),
             inferredTypes = IdentityHashMap(inferredTypes),
             typeHints = typeHints.toList(),
         )
+    }
+
+    private fun topLevelEntries(): List<TopLevelEntry> {
+        val entries = mutableListOf<TopLevelEntry>()
+        var nextFallbackOffset = Int.MAX_VALUE / 4
+
+        document.definitions.forEach { definition ->
+            val offset = definition.nameSpan?.startOffset ?: nextFallbackOffset++
+            entries += TopLevelEntry.DefinitionEntry(offset, definition)
+        }
+
+        document.rewriteRules.forEach { rule ->
+            entries += TopLevelEntry.RuleEntry(rule.nameSpan.startOffset, rule)
+        }
+
+        return entries.sortedBy { it.startOffset }
     }
 
     private fun checkDefinition(definition: Definition) {
@@ -66,6 +87,155 @@ class TypeChecker(private val document: ParsedDocument) {
         val finalType = declaredType ?: implementationType
         if (finalType != null) {
             globals[definition.name] = GlobalEntry(type = finalType, implementation = implementation)
+        }
+    }
+
+    private fun checkRewriteRule(rule: RewriteRule) {
+        val (head, args) = decomposeApplication(rule.lhs)
+        if (head !is Term.Variable || args.isEmpty()) {
+            report(rule.nameSpan, "Rule '${rule.name}': LHS must be an application of a constant")
+            return
+        }
+
+        val headEntry = globals[head.name]
+        if (headEntry == null) {
+            report(rule.nameSpan, "Rule '${rule.name}': Unknown constant '${head.name}' on LHS")
+            return
+        }
+
+        if (headEntry.implementation != null) {
+            report(rule.nameSpan, "Rule '${rule.name}': '${head.name}' is not axiomatic (it has ':=')")
+            return
+        }
+
+        val patternLocals = linkedMapOf<String, Term>()
+        var currentType: Term = normalize(headEntry.type)
+        var valid = true
+
+        args.forEach { argument ->
+            val functionType = normalize(currentType)
+            if (functionType !is Term.Pi) {
+                report(rule.nameSpan, "Rule '${rule.name}': too many arguments on LHS for '${head.name}'")
+                valid = false
+                return@forEach
+            }
+
+            if (!checkRulePatternAgainstExpectedType(argument, functionType.parameterType, patternLocals)) {
+                valid = false
+                return@forEach
+            }
+
+            currentType = normalize(substitute(functionType.body, functionType.parameter, argument))
+        }
+
+        if (!valid) {
+            return
+        }
+
+        val lhsType = inferType(rule.lhs, patternLocals) ?: currentType
+        val rhsType = inferType(rule.rhs, patternLocals)
+        if (rhsType == null) {
+            return
+        }
+
+        if (!convertible(lhsType, rhsType)) {
+            report(
+                rule.nameSpan,
+                "Rule '${rule.name}' type mismatch: lhs has ${pretty(lhsType)}, rhs has ${pretty(rhsType)}",
+            )
+            return
+        }
+
+        val lhsVariables = collectRuleVariables(rule.lhs)
+        val rhsVariables = collectRuleVariables(rule.rhs)
+        val missing = rhsVariables - lhsVariables
+        if (missing.isNotEmpty()) {
+            report(
+                rule.nameSpan,
+                "Rule '${rule.name}' is not closed: RHS variables not in LHS: ${missing.sorted().joinToString(", ")}",
+            )
+            return
+        }
+
+        rewriteRulesByHead
+            .getOrPut(head.name) { mutableListOf() }
+            .add(
+                RegisteredRewriteRule(
+                    name = rule.name,
+                    headConstant = head.name,
+                    lhs = rule.lhs,
+                    rhs = rule.rhs,
+                    patternVariables = lhsVariables,
+                ),
+            )
+    }
+
+    private fun checkRulePatternAgainstExpectedType(
+        term: Term,
+        expectedType: Term,
+        locals: MutableMap<String, Term>,
+    ): Boolean {
+        return when (term) {
+            is Term.Variable -> {
+                if (term.name == "Type") {
+                    val inferred = inferType(term, locals) ?: return false
+                    if (!convertible(inferred, expectedType)) {
+                        report(term.span, "Rule pattern expected ${pretty(expectedType)}, got ${pretty(inferred)}")
+                        false
+                    } else {
+                        true
+                    }
+                } else if (term.name in globals) {
+                    val inferred = inferType(term, locals) ?: return false
+                    if (!convertible(inferred, expectedType)) {
+                        report(term.span, "Rule pattern expected ${pretty(expectedType)}, got ${pretty(inferred)}")
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    val existing = locals[term.name]
+                    if (existing != null && !convertible(existing, expectedType)) {
+                        report(term.span, "Rule variable '${term.name}' has inconsistent type")
+                        false
+                    } else {
+                        val normalizedExpected = normalize(expectedType)
+                        locals[term.name] = existing ?: normalizedExpected
+                        addTypeHint(term.span, normalizedExpected)
+                        true
+                    }
+                }
+            }
+
+            is Term.Application -> {
+                val functionType = inferType(term.function, locals)?.let { normalize(it) }
+                if (functionType !is Term.Pi) {
+                    report(spanOf(term), "Cannot apply non-function term in rule pattern: ${pretty(term.function)}")
+                    return false
+                }
+
+                if (!checkRulePatternAgainstExpectedType(term.argument, functionType.parameterType, locals)) {
+                    return false
+                }
+
+                val resulting = normalize(substitute(functionType.body, functionType.parameter, term.argument))
+                if (!convertible(resulting, expectedType)) {
+                    report(spanOf(term), "Rule pattern expected ${pretty(expectedType)}, got ${pretty(resulting)}")
+                    return false
+                }
+
+                true
+            }
+
+            else -> {
+                val inferred = inferType(term, locals) ?: return false
+                if (!convertible(inferred, expectedType)) {
+                    report(spanOf(term), "Rule pattern expected ${pretty(expectedType)}, got ${pretty(inferred)}")
+                    false
+                } else {
+                    true
+                }
+            }
         }
     }
 
@@ -184,9 +354,107 @@ class TypeChecker(private val document: ParsedDocument) {
     private fun isReservedLocalName(name: String): Boolean = name == "Type"
 
     private fun convertible(a: Term, b: Term): Boolean {
-        val na = normalize(a)
-        val nb = normalize(b)
-        return alphaEquivalent(na, nb)
+        return defEq(a, b)
+    }
+
+    private fun defEq(a: Term, b: Term): Boolean {
+        val wa = whnf(a)
+        val wb = whnf(b)
+
+        if (structuralDefEq(wa, wb)) {
+            return true
+        }
+
+        return alphaEquivalent(normalize(a), normalize(b))
+    }
+
+    private fun structuralDefEq(a: Term, b: Term): Boolean {
+        return when {
+            a is Term.Meta && b is Term.Meta -> a.id == b.id
+            a is Term.Variable && b is Term.Variable -> a.name == b.name
+            a is Term.Constant && b is Term.Constant -> a.name == b.name
+            a is Term.Variable && b is Term.Constant -> a.name == b.name
+            a is Term.Constant && b is Term.Variable -> a.name == b.name
+
+            a is Term.Typed && b is Term.Typed -> {
+                defEq(a.term, b.term) && defEq(a.type, b.type)
+            }
+
+            a is Term.Application && b is Term.Application -> {
+                defEq(a.function, b.function) && defEq(a.argument, b.argument)
+            }
+
+            a is Term.Lambda && b is Term.Lambda -> {
+                if (!defEq(a.parameterType, b.parameterType)) {
+                    false
+                } else {
+                    val fresh = freshName(a.parameter, a.body, b.body)
+                    val freshVar = Term.Variable(fresh, a.parameterSpan)
+                    val leftBody = substitute(a.body, a.parameter, freshVar)
+                    val rightBody = substitute(b.body, b.parameter, freshVar)
+                    defEq(leftBody, rightBody)
+                }
+            }
+
+            a is Term.Pi && b is Term.Pi -> {
+                if (!defEq(a.parameterType, b.parameterType)) {
+                    false
+                } else {
+                    val fresh = freshName(a.parameter, a.body, b.body)
+                    val freshVar = Term.Variable(fresh, a.parameterSpan)
+                    val leftBody = substitute(a.body, a.parameter, freshVar)
+                    val rightBody = substitute(b.body, b.parameter, freshVar)
+                    defEq(leftBody, rightBody)
+                }
+            }
+
+            else -> false
+        }
+    }
+
+    private fun whnf(term: Term, unfolding: MutableSet<String> = linkedSetOf()): Term {
+        return when (term) {
+            is Term.Meta -> term
+            is Term.Lambda -> term
+            is Term.Pi -> term
+            is Term.Constant -> {
+                val impl = globals[term.name]?.implementation
+                if (impl == null || !unfolding.add(term.name)) {
+                    term
+                } else {
+                    val result = whnf(impl, unfolding)
+                    unfolding.remove(term.name)
+                    result
+                }
+            }
+
+            is Term.Variable -> {
+                val impl = globals[term.name]?.implementation
+                if (impl == null || !unfolding.add(term.name)) {
+                    term
+                } else {
+                    val result = whnf(impl, unfolding)
+                    unfolding.remove(term.name)
+                    result
+                }
+            }
+
+            is Term.Typed -> whnf(term.term, unfolding)
+            is Term.Application -> {
+                val fn = whnf(term.function, unfolding)
+                if (fn is Term.Lambda) {
+                    whnf(substitute(fn.body, fn.parameter, term.argument), unfolding)
+                } else {
+                    val candidate = Term.Application(fn, term.argument)
+                    val rewritten = rewriteAtRoot(candidate)
+                    if (rewritten != null) {
+                        whnf(rewritten, unfolding)
+                    } else {
+                        candidate
+                    }
+                }
+            }
+        }
     }
 
     private fun normalize(term: Term, unfolding: MutableSet<String> = linkedSetOf()): Term {
@@ -235,8 +503,126 @@ class TypeChecker(private val document: ParsedDocument) {
                 if (fn is Term.Lambda) {
                     normalize(substitute(fn.body, fn.parameter, arg), unfolding)
                 } else {
-                    Term.Application(fn, arg)
+                    val normalizedApplication = Term.Application(fn, arg)
+                    applyRewriteRules(normalizedApplication, unfolding)
                 }
+            }
+        }
+    }
+
+    private fun applyRewriteRules(term: Term, unfolding: MutableSet<String>): Term {
+        var current = term
+        while (true) {
+            val rewritten = rewriteAtRoot(current) ?: return current
+            current = normalize(rewritten, unfolding)
+        }
+    }
+
+    private fun rewriteAtRoot(term: Term): Term? {
+        val (head, _) = decomposeApplication(term)
+        val headName = when (head) {
+            is Term.Variable -> head.name
+            is Term.Constant -> head.name
+            else -> return null
+        }
+        val rules = rewriteRulesByHead[headName] ?: return null
+
+        rules.forEach { rule ->
+            val substitutions = linkedMapOf<String, Term>()
+            if (matchRewritePattern(rule.lhs, term, rule.patternVariables, substitutions)) {
+                return instantiateRuleRhs(rule.rhs, substitutions)
+            }
+        }
+
+        return null
+    }
+
+    private fun matchRewritePattern(
+        pattern: Term,
+        target: Term,
+        patternVariables: Set<String>,
+        substitutions: MutableMap<String, Term>,
+    ): Boolean {
+        return when {
+            pattern is Term.Variable && pattern.name in patternVariables -> {
+                val existing = substitutions[pattern.name]
+                if (existing == null) {
+                    substitutions[pattern.name] = target
+                    true
+                } else {
+                    alphaEquivalent(normalize(existing), normalize(target))
+                }
+            }
+
+            pattern is Term.Variable && target is Term.Variable -> pattern.name == target.name
+            pattern is Term.Variable && target is Term.Constant -> pattern.name == target.name
+            pattern is Term.Constant && target is Term.Variable -> pattern.name == target.name
+            pattern is Term.Constant && target is Term.Constant -> pattern.name == target.name
+            pattern is Term.Meta && target is Term.Meta -> pattern.id == target.id
+
+            pattern is Term.Application && target is Term.Application -> {
+                matchRewritePattern(pattern.function, target.function, patternVariables, substitutions) &&
+                    matchRewritePattern(pattern.argument, target.argument, patternVariables, substitutions)
+            }
+
+            pattern is Term.Typed && target is Term.Typed -> {
+                matchRewritePattern(pattern.term, target.term, patternVariables, substitutions) &&
+                    matchRewritePattern(pattern.type, target.type, patternVariables, substitutions)
+            }
+
+            pattern is Term.Lambda && target is Term.Lambda -> {
+                pattern.parameter == target.parameter &&
+                    matchRewritePattern(pattern.parameterType, target.parameterType, patternVariables, substitutions) &&
+                    matchRewritePattern(pattern.body, target.body, patternVariables, substitutions)
+            }
+
+            pattern is Term.Pi && target is Term.Pi -> {
+                pattern.parameter == target.parameter &&
+                    matchRewritePattern(pattern.parameterType, target.parameterType, patternVariables, substitutions) &&
+                    matchRewritePattern(pattern.body, target.body, patternVariables, substitutions)
+            }
+
+            else -> false
+        }
+    }
+
+    private fun instantiateRuleRhs(rhs: Term, substitutions: Map<String, Term>): Term {
+        return applySimultaneousSubstitution(rhs, substitutions)
+    }
+
+    private fun applySimultaneousSubstitution(term: Term, substitutions: Map<String, Term>): Term {
+        return when (term) {
+            is Term.Meta -> term
+            is Term.Constant -> term
+            is Term.Variable -> substitutions[term.name] ?: term
+            is Term.Typed -> Term.Typed(
+                term = applySimultaneousSubstitution(term.term, substitutions),
+                type = applySimultaneousSubstitution(term.type, substitutions),
+            )
+
+            is Term.Application -> Term.Application(
+                function = applySimultaneousSubstitution(term.function, substitutions),
+                argument = applySimultaneousSubstitution(term.argument, substitutions),
+            )
+
+            is Term.Lambda -> {
+                val nextSubstitutions = substitutions - term.parameter
+                Term.Lambda(
+                    parameter = term.parameter,
+                    parameterType = applySimultaneousSubstitution(term.parameterType, substitutions),
+                    body = applySimultaneousSubstitution(term.body, nextSubstitutions),
+                    parameterSpan = term.parameterSpan,
+                )
+            }
+
+            is Term.Pi -> {
+                val nextSubstitutions = substitutions - term.parameter
+                Term.Pi(
+                    parameter = term.parameter,
+                    parameterType = applySimultaneousSubstitution(term.parameterType, substitutions),
+                    body = applySimultaneousSubstitution(term.body, nextSubstitutions),
+                    parameterSpan = term.parameterSpan,
+                )
             }
         }
     }
@@ -320,6 +706,38 @@ class TypeChecker(private val document: ParsedDocument) {
         }
     }
 
+    private fun collectRuleVariables(term: Term, bound: Set<String> = emptySet()): Set<String> {
+        return when (term) {
+            is Term.Meta,
+            is Term.Constant,
+            -> emptySet()
+
+            is Term.Variable -> {
+                if (term.name in bound || term.name == "Type" || term.name in globals) {
+                    emptySet()
+                } else {
+                    setOf(term.name)
+                }
+            }
+
+            is Term.Typed -> collectRuleVariables(term.term, bound) + collectRuleVariables(term.type, bound)
+            is Term.Application -> collectRuleVariables(term.function, bound) + collectRuleVariables(term.argument, bound)
+            is Term.Lambda -> collectRuleVariables(term.parameterType, bound) + collectRuleVariables(term.body, bound + term.parameter)
+            is Term.Pi -> collectRuleVariables(term.parameterType, bound) + collectRuleVariables(term.body, bound + term.parameter)
+        }
+    }
+
+    private fun decomposeApplication(term: Term): Pair<Term, List<Term>> {
+        val arguments = mutableListOf<Term>()
+        var current = term
+        while (current is Term.Application) {
+            arguments.add(current.argument)
+            current = current.function
+        }
+        arguments.reverse()
+        return current to arguments
+    }
+
     private fun freshName(base: String, vararg terms: Term): String {
         val occupied = terms.flatMap { freeVariables(it) }.toSet() + globals.keys
         var candidate = "${base}_0"
@@ -369,8 +787,8 @@ class TypeChecker(private val document: ParsedDocument) {
                 is Term.Constant -> term.name
                 is Term.Typed -> "(${prettyTerm(term.term)} : ${prettyTerm(term.type)})"
                 is Term.Application -> "(${prettyTerm(term.function)} ${prettyTerm(term.argument)})"
-                is Term.Lambda -> "(λ${term.parameter}. ${prettyTerm(term.body)})"
-                is Term.Pi -> "(Π(${term.parameter} : ${prettyTerm(term.parameterType)}). ${prettyTerm(term.body)})"
+                is Term.Lambda -> "(λ${term.parameter} => ${prettyTerm(term.body)})"
+                is Term.Pi -> "(Π(${term.parameter} : ${prettyTerm(term.parameterType)}) => ${prettyTerm(term.body)})"
             }
         }
     }
@@ -420,4 +838,26 @@ class TypeChecker(private val document: ParsedDocument) {
         val type: Term,
         val implementation: Term?,
     )
+
+    private data class RegisteredRewriteRule(
+        val name: String,
+        val headConstant: String,
+        val lhs: Term,
+        val rhs: Term,
+        val patternVariables: Set<String>,
+    )
+
+    private sealed interface TopLevelEntry {
+        val startOffset: Int
+
+        data class DefinitionEntry(
+            override val startOffset: Int,
+            val definition: Definition,
+        ) : TopLevelEntry
+
+        data class RuleEntry(
+            override val startOffset: Int,
+            val rule: RewriteRule,
+        ) : TopLevelEntry
+    }
 }
