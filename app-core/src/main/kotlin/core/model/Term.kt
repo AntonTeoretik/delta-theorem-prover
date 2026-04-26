@@ -1,6 +1,11 @@
 package core.model
 
 sealed interface Term {
+    enum class Visibility {
+        EXPLICIT,
+        IMPLICIT,
+    }
+
     data class Variable(
         val name: String,
         val span: TextSpan,
@@ -16,6 +21,7 @@ sealed interface Term {
         val parameterType: Term,
         val body: Term,
         val parameterSpan: TextSpan,
+        val visibility: Visibility,
     ) : Term
 
     data class Pi(
@@ -23,6 +29,7 @@ sealed interface Term {
         val parameterType: Term,
         val body: Term,
         val parameterSpan: TextSpan,
+        val visibility: Visibility,
     ) : Term
 
     data class Meta(
@@ -38,5 +45,6 @@ sealed interface Term {
     data class Application(
         val function: Term,
         val argument: Term,
+        val visibility: Visibility,
     ) : Term
 }

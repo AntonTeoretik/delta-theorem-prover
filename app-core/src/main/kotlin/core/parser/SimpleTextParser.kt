@@ -17,7 +17,7 @@ class SimpleTextParser : TextParser {
         val tokens = lexer.lex()
         val diagnostics = lexer.diagnostics.toMutableList()
 
-        val parser = TermSyntaxParser(tokens)
+        val parser = TermSyntaxParser(tokens, normalized)
         val parseResult = parser.parseProgramOrTerm()
         diagnostics.addAll(parseResult.diagnostics)
 
@@ -45,6 +45,8 @@ private enum class TokenType {
     DOT,
     LPAREN,
     RPAREN,
+    LBRACE,
+    RBRACE,
     COMMA,
     COLON,
     ASSIGN,
@@ -93,6 +95,8 @@ private class TermLexer(private val source: String) {
                 ch == '.' -> tokens.add(singleToken(TokenType.DOT, "."))
                 ch == '(' -> tokens.add(singleToken(TokenType.LPAREN, "("))
                 ch == ')' -> tokens.add(singleToken(TokenType.RPAREN, ")"))
+                ch == '{' -> tokens.add(singleToken(TokenType.LBRACE, "{"))
+                ch == '}' -> tokens.add(singleToken(TokenType.RBRACE, "}"))
                 ch == ',' -> tokens.add(singleToken(TokenType.COMMA, ","))
                 ch == ';' -> tokens.add(singleToken(TokenType.SEMICOLON, ";"))
                 ch == '`' -> tokens.add(singleToken(TokenType.BACKTICK, "`"))
@@ -304,6 +308,8 @@ private class TermLexer(private val source: String) {
         return this == '.' ||
             this == '(' ||
             this == ')' ||
+            this == '{' ||
+            this == '}' ||
             this == ',' ||
             this == ';' ||
             this == ':' ||
@@ -319,6 +325,8 @@ private class TermLexer(private val source: String) {
             this != '.' &&
             this != '(' &&
             this != ')' &&
+            this != '{' &&
+            this != '}' &&
             this != ',' &&
             this != ';' &&
             this != ':' &&
@@ -342,7 +350,7 @@ private class TermLexer(private val source: String) {
     }
 }
 
-private class TermSyntaxParser(private val tokens: List<Token>) {
+private class TermSyntaxParser(private val tokens: List<Token>, private val sourceText: String) {
     private var cursor: Int = 0
     private var nextMetaId: Int = 0
 
@@ -703,7 +711,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
         return parameters.asReversed().fold(body) { acc, parameter ->
             val parameterType = parameter.type ?: freshMeta(parameter.span)
-            Term.Lambda(parameter.name, parameterType, acc, parameter.span)
+            Term.Lambda(parameter.name, parameterType, acc, parameter.span, parameter.visibility)
         }
     }
 
@@ -724,7 +732,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
 
         return parameters.asReversed().fold(body) { acc, parameter ->
             val parameterType = parameter.type ?: freshMeta(parameter.span)
-            Term.Pi(parameter.name, parameterType, acc, parameter.span)
+            Term.Pi(parameter.name, parameterType, acc, parameter.span, parameter.visibility)
         }
     }
 
@@ -790,6 +798,17 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
     }
 
     private fun parseForallParameter(diagnostics: MutableList<Diagnostic>): LambdaParameter {
+        if (match(TokenType.LBRACE)) {
+            val identifier = consume(TokenType.IDENT, "Expected identifier in forall binder", diagnostics)
+            val parameterType = if (match(TokenType.COLON)) {
+                parseExpression(diagnostics)
+            } else {
+                null
+            }
+            consume(TokenType.RBRACE, "Expected '}' after forall binder", diagnostics)
+            return binderParameter(identifier, parameterType, diagnostics, Term.Visibility.IMPLICIT)
+        }
+
         if (match(TokenType.LPAREN)) {
             val identifier = consume(TokenType.IDENT, "Expected identifier in forall binder", diagnostics)
             val parameterType = if (match(TokenType.COLON)) {
@@ -798,7 +817,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 null
             }
             consume(TokenType.RPAREN, "Expected ')' after forall binder", diagnostics)
-            return binderParameter(identifier, parameterType, diagnostics)
+            return binderParameter(identifier, parameterType, diagnostics, Term.Visibility.EXPLICIT)
         }
 
         val identifier = consume(TokenType.IDENT, "Expected identifier after '∀'", diagnostics)
@@ -807,7 +826,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         } else {
             null
         }
-        return binderParameter(identifier, parameterType, diagnostics)
+        return binderParameter(identifier, parameterType, diagnostics, Term.Visibility.EXPLICIT)
     }
 
     private fun parseLambdaParameterInGroup(diagnostics: MutableList<Diagnostic>): LambdaParameter {
@@ -819,7 +838,7 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 null
             }
             consume(TokenType.RPAREN, "Expected ')' after lambda binder", diagnostics)
-            return binderParameter(identifier, parameterType, diagnostics)
+            return binderParameter(identifier, parameterType, diagnostics, Term.Visibility.EXPLICIT)
         }
 
         val identifier = consume(TokenType.IDENT, "Expected identifier in lambda parameters", diagnostics)
@@ -828,10 +847,21 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         } else {
             null
         }
-        return binderParameter(identifier, parameterType, diagnostics)
+        return binderParameter(identifier, parameterType, diagnostics, Term.Visibility.EXPLICIT)
     }
 
     private fun parseLambdaParameter(diagnostics: MutableList<Diagnostic>): LambdaParameter {
+        if (match(TokenType.LBRACE)) {
+            val identifier = consume(TokenType.IDENT, "Expected identifier in lambda binder", diagnostics)
+            val parameterType = if (match(TokenType.COLON)) {
+                parseExpression(diagnostics)
+            } else {
+                null
+            }
+            consume(TokenType.RBRACE, "Expected '}' after lambda binder", diagnostics)
+            return binderParameter(identifier, parameterType, diagnostics, Term.Visibility.IMPLICIT)
+        }
+
         if (match(TokenType.LPAREN)) {
             val identifier = consume(TokenType.IDENT, "Expected identifier in lambda binder", diagnostics)
             val parameterType = if (match(TokenType.COLON)) {
@@ -840,17 +870,18 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 null
             }
             consume(TokenType.RPAREN, "Expected ')' after lambda binder", diagnostics)
-            return binderParameter(identifier, parameterType, diagnostics)
+            return binderParameter(identifier, parameterType, diagnostics, Term.Visibility.EXPLICIT)
         }
 
         val identifier = consume(TokenType.IDENT, "Expected identifier after '\\'", diagnostics)
-        return binderParameter(identifier, null, diagnostics)
+        return binderParameter(identifier, null, diagnostics, Term.Visibility.EXPLICIT)
     }
 
     private fun binderParameter(
         identifier: Token,
         parameterType: Term?,
         diagnostics: MutableList<Diagnostic>,
+        visibility: Term.Visibility,
     ): LambdaParameter {
         val span = TextSpan(identifier.startOffset, identifier.endOffset)
         val rawName = identifier.text.ifBlank { "_" }
@@ -870,13 +901,25 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             name = name,
             span = span,
             type = parameterType,
+            visibility = visibility,
         )
     }
 
     private fun parseApplication(diagnostics: MutableList<Diagnostic>): Term {
         var expression = parseAtom(diagnostics)
 
-        while (match(TokenType.LPAREN)) {
+        while (true) {
+            if (match(TokenType.LBRACE)) {
+                val argument = parseExpression(diagnostics)
+                consume(TokenType.RBRACE, "Expected '}' after implicit argument", diagnostics)
+                expression = Term.Application(expression, argument, Term.Visibility.IMPLICIT)
+                continue
+            }
+
+            if (!match(TokenType.LPAREN)) {
+                break
+            }
+
             if (check(TokenType.RPAREN)) {
                 val token = peek()
                 diagnostics.add(
@@ -892,8 +935,8 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 continue
             }
 
-            val arguments = mutableListOf<Term>()
-            arguments.add(parseExpression(diagnostics))
+            val arguments = mutableListOf<CallArgument>()
+            arguments.add(parseCallArgument(diagnostics))
 
             while (match(TokenType.COMMA)) {
                 if (check(TokenType.RPAREN)) {
@@ -909,12 +952,12 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                     )
                     break
                 }
-                arguments.add(parseExpression(diagnostics))
+                arguments.add(parseCallArgument(diagnostics))
             }
 
             consume(TokenType.RPAREN, "Expected ')' after arguments", diagnostics)
             arguments.forEach { argument ->
-                expression = Term.Application(expression, argument)
+                expression = Term.Application(expression, argument.term, argument.visibility)
             }
         }
 
@@ -942,6 +985,11 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         if (match(TokenType.LPAREN)) {
             val term = parseExpression(diagnostics)
             consume(TokenType.RPAREN, "Expected ')' after term", diagnostics)
+            return term
+        }
+        if (match(TokenType.LBRACE)) {
+            val term = parseExpression(diagnostics)
+            consume(TokenType.RBRACE, "Expected '}' after term", diagnostics)
             return term
         }
 
@@ -1060,7 +1108,11 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
             TokenType.CONST_IDENT, TokenType.BACKSLASH_CONST, TokenType.SYMBOLIC_IDENT -> Term.Variable(operatorToken.text, operatorSpan)
             else -> Term.Variable(operatorToken.text, operatorSpan)
         }
-        return Term.Application(Term.Application(operatorTerm, left), right)
+        return Term.Application(
+            function = Term.Application(operatorTerm, left, Term.Visibility.EXPLICIT),
+            argument = right,
+            visibility = Term.Visibility.EXPLICIT,
+        )
     }
 
     private fun makePiFromArrow(left: Term, right: Term, arrowToken: Token): Term {
@@ -1071,11 +1123,33 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
                 parameterType = left.type,
                 body = right,
                 parameterSpan = variable.span,
+                visibility = inferArrowBinderVisibility(variable.span),
             )
         }
 
         val syntheticSpan = TextSpan(arrowToken.startOffset, arrowToken.startOffset)
-        return Term.Pi("_", left, right, syntheticSpan)
+        return Term.Pi("_", left, right, syntheticSpan, Term.Visibility.EXPLICIT)
+    }
+
+    private fun parseCallArgument(diagnostics: MutableList<Diagnostic>): CallArgument {
+        if (match(TokenType.LBRACE)) {
+            val term = parseExpression(diagnostics)
+            consume(TokenType.RBRACE, "Expected '}' after implicit argument", diagnostics)
+            return CallArgument(term, Term.Visibility.IMPLICIT)
+        }
+        return CallArgument(parseExpression(diagnostics), Term.Visibility.EXPLICIT)
+    }
+
+    private fun inferArrowBinderVisibility(variableSpan: TextSpan): Term.Visibility {
+        var index = variableSpan.startOffset - 1
+        while (index >= 0 && sourceText[index].isWhitespace()) {
+            index -= 1
+        }
+        return if (index >= 0 && sourceText[index] == '{') {
+            Term.Visibility.IMPLICIT
+        } else {
+            Term.Visibility.EXPLICIT
+        }
     }
 
     private fun freshMeta(span: TextSpan): Term.Meta {
@@ -1163,6 +1237,12 @@ private class TermSyntaxParser(private val tokens: List<Token>) {
         val name: String,
         val span: TextSpan,
         val type: Term?,
+        val visibility: Term.Visibility,
+    )
+
+    private data class CallArgument(
+        val term: Term,
+        val visibility: Term.Visibility,
     )
 
     private companion object {

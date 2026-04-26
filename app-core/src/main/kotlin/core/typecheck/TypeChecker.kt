@@ -31,12 +31,15 @@ class TypeChecker(
     private val typeHints = mutableListOf<TypeHint>()
     private val typeHintKeys = linkedSetOf<String>()
     private val rewriteRulesByHead = linkedMapOf<String, MutableList<RegisteredRewriteRule>>()
+    private val metaContext = linkedMapOf<Int, MetaEntry>()
+    private var nextMetaId: Int = 0
     private var nextTypeHintId: Int = 0
     private var traceSink: MutableList<String>? = null
 
     init {
         val type = typeUniverseTerm()
         globals["Type"] = GlobalEntry(type = type, implementation = null)
+        nextMetaId = maxMetaIdInDocument() + 1
     }
 
     fun checkProgram(): TypeCheckResult {
@@ -74,6 +77,13 @@ class TypeChecker(
 
             traceSink = null
         }
+
+        metaContext.values.forEach { entry ->
+            if (entry.requiresResolution && entry.solution == null) {
+                report(entry.span, "cannot infer implicit argument")
+            }
+        }
+
         return TypeCheckResult(
             diagnostics = diagnostics.toList(),
             inferredTypes = IdentityHashMap(inferredTypes),
@@ -99,6 +109,33 @@ class TypeChecker(
         return entries.sortedBy { it.startOffset }
     }
 
+    private fun maxMetaIdInDocument(): Int {
+        fun maxMeta(term: Term): Int {
+            return when (term) {
+                is Term.Meta -> term.id
+                is Term.Variable,
+                is Term.Constant,
+                -> -1
+
+                is Term.Typed -> maxOf(maxMeta(term.term), maxMeta(term.type))
+                is Term.Application -> maxOf(maxMeta(term.function), maxMeta(term.argument))
+                is Term.Lambda -> maxOf(maxMeta(term.parameterType), maxMeta(term.body))
+                is Term.Pi -> maxOf(maxMeta(term.parameterType), maxMeta(term.body))
+            }
+        }
+
+        val values = mutableListOf<Int>()
+        document.definitions.forEach { definition ->
+            definition.type?.let { values += maxMeta(it) }
+            definition.implementation?.let { values += maxMeta(it) }
+        }
+        document.rewriteRules.forEach { rule ->
+            values += maxMeta(rule.lhs)
+            values += maxMeta(rule.rhs)
+        }
+        return values.maxOrNull() ?: -1
+    }
+
     private fun checkDefinition(definition: Definition) {
         val declaredType = definition.type
         val implementation = definition.implementation
@@ -114,12 +151,23 @@ class TypeChecker(
         if (declaredType != null) {
             traceStep("infer declared type kind")
             inferType(declaredType, emptyMap())
+            checkLeadingImplicitArguments(declaredType)
         }
 
-        if (implementation != null) {
-            traceStep("infer implementation type")
+        val implementationType = implementation?.let {
+            if (declaredType != null) {
+                traceStep("check implementation against declared type")
+                val ok = checkTermAgainst(it, declaredType, emptyMap())
+                if (!ok) {
+                    null
+                } else {
+                    declaredType
+                }
+            } else {
+                traceStep("infer implementation type")
+                inferType(it, emptyMap())
+            }
         }
-        val implementationType = implementation?.let { inferType(it, emptyMap()) }
 
         if (declaredType != null && implementationType != null) {
             traceStep("check convertibility declared ~ inferred")
@@ -201,7 +249,7 @@ class TypeChecker(
         traceStep("lhs type: ${pretty(lhsType)}")
         traceStep("rhs type: ${pretty(rhsType)}")
 
-        if (!convertible(lhsType, rhsType)) {
+        if (!convertibleInContext(lhsType, rhsType, patternLocals)) {
             report(
                 rule.nameSpan,
                 "Rule '${rule.name}' type mismatch: lhs has ${pretty(lhsType)}, rhs has ${pretty(rhsType)}",
@@ -236,6 +284,20 @@ class TypeChecker(
         traceStep("register rewrite rule for '${head.name}'")
     }
 
+    private fun checkLeadingImplicitArguments(type: Term) {
+        var current = whnf(type)
+        var seenExplicit = false
+        while (current is Term.Pi) {
+            if (current.visibility == Term.Visibility.EXPLICIT) {
+                seenExplicit = true
+            } else if (seenExplicit) {
+                report(current.parameterSpan, "implicit arguments must be leading")
+                break
+            }
+            current = whnf(current.body)
+        }
+    }
+
     private fun checkRulePatternAgainstExpectedType(
         term: Term,
         expectedType: Term,
@@ -245,7 +307,7 @@ class TypeChecker(
             is Term.Variable -> {
                 if (term.name == "Type") {
                     val inferred = inferType(term, locals) ?: return false
-                    if (!convertible(inferred, expectedType)) {
+                    if (!convertibleInContext(inferred, expectedType, locals)) {
                         report(term.span, "Rule pattern expected ${pretty(expectedType)}, got ${pretty(inferred)}")
                         false
                     } else {
@@ -253,7 +315,7 @@ class TypeChecker(
                     }
                 } else if (term.name in globals) {
                     val inferred = inferType(term, locals) ?: return false
-                    if (!convertible(inferred, expectedType)) {
+                    if (!convertibleInContext(inferred, expectedType, locals)) {
                         report(term.span, "Rule pattern expected ${pretty(expectedType)}, got ${pretty(inferred)}")
                         false
                     } else {
@@ -261,7 +323,7 @@ class TypeChecker(
                     }
                 } else {
                     val existing = locals[term.name]
-                    if (existing != null && !convertible(existing, expectedType)) {
+                    if (existing != null && !convertibleInContext(existing, expectedType, locals)) {
                         report(term.span, "Rule variable '${term.name}' has inconsistent type")
                         false
                     } else {
@@ -285,7 +347,7 @@ class TypeChecker(
                 }
 
                 val resulting = normalize(substitute(functionType.body, functionType.parameter, term.argument))
-                if (!convertible(resulting, expectedType)) {
+                if (!convertibleInContext(resulting, expectedType, locals)) {
                     report(spanOf(term), "Rule pattern expected ${pretty(expectedType)}, got ${pretty(resulting)}")
                     return false
                 }
@@ -295,7 +357,7 @@ class TypeChecker(
 
             else -> {
                 val inferred = inferType(term, locals) ?: return false
-                if (!convertible(inferred, expectedType)) {
+                if (!convertibleInContext(inferred, expectedType, locals)) {
                     report(spanOf(term), "Rule pattern expected ${pretty(expectedType)}, got ${pretty(inferred)}")
                     false
                 } else {
@@ -308,8 +370,10 @@ class TypeChecker(
     private fun inferType(term: Term, locals: Map<String, Term>): Term? {
         val inferred = when (term) {
             is Term.Meta -> {
-                report(term.span, "Meta variables are not supported in type checking phase (?m${term.id})")
-                null
+                val entry = metaContext.getOrPut(term.id) {
+                    MetaEntry(id = term.id, expectedType = null, solution = null, allowedLocals = locals.keys, span = term.span)
+                }
+                entry.solution?.let { inferType(it, locals) } ?: entry.expectedType ?: typeUniverseTerm()
             }
 
             is Term.Variable -> {
@@ -363,32 +427,157 @@ class TypeChecker(
                     parameterType = term.parameterType,
                     body = bodyType,
                     parameterSpan = term.parameterSpan,
+                    visibility = term.visibility,
                 )
             }
 
             is Term.Application -> {
-                val functionType = inferType(term.function, locals)?.let { normalize(it) } ?: return null
-                if (functionType !is Term.Pi) {
-                    report(null, "Cannot apply non-function term: ${pretty(term.function)}")
-                    return null
-                }
-
-                val argumentType = inferType(term.argument, locals) ?: return null
-                if (!convertible(argumentType, functionType.parameterType)) {
-                    report(
-                        spanOf(term.argument),
-                        "Application argument type mismatch. Expected ${pretty(functionType.parameterType)}, got ${pretty(argumentType)}",
-                    )
-                    return null
-                }
-
-                substitute(functionType.body, functionType.parameter, term.argument)
+                inferApplicationType(term, locals)
             }
         }
         if (inferred != null) {
             inferredTypes[term] = inferred
         }
         return inferred
+    }
+
+    private fun inferApplicationType(term: Term.Application, locals: Map<String, Term>): Term? {
+        var functionType = inferType(term.function, locals)?.let { whnf(it) } ?: return null
+
+        if (term.visibility == Term.Visibility.EXPLICIT) {
+            while (functionType is Term.Pi && functionType.visibility == Term.Visibility.IMPLICIT) {
+                val meta = freshImplicitMeta(functionType.parameterType, locals, spanOf(term.function))
+                functionType = whnf(substitute(functionType.body, functionType.parameter, meta))
+            }
+
+            if (functionType !is Term.Pi || functionType.visibility != Term.Visibility.EXPLICIT) {
+                report(spanOf(term.function), "expected explicit function type")
+                return null
+            }
+
+            if (!checkTermAgainst(term.argument, functionType.parameterType, locals)) {
+                report(
+                    spanOf(term.argument),
+                    "Application argument type mismatch. Expected ${pretty(functionType.parameterType)}, got ${pretty(inferType(term.argument, locals) ?: Term.Variable("_", TextSpan(0, 0)))}",
+                )
+                return null
+            }
+            return substitute(functionType.body, functionType.parameter, term.argument)
+        }
+
+        if (functionType !is Term.Pi || functionType.visibility != Term.Visibility.IMPLICIT) {
+            report(spanOf(term), "unexpected implicit argument")
+            return null
+        }
+
+        if (!checkTermAgainst(term.argument, functionType.parameterType, locals)) {
+            report(spanOf(term.argument), "type mismatch for implicit argument")
+            return null
+        }
+
+        return substitute(functionType.body, functionType.parameter, term.argument)
+    }
+
+    private fun checkTermAgainst(term: Term, expectedType: Term, locals: Map<String, Term>): Boolean {
+        val expectedElaborated = elaborateImplicitApplications(zonk(expectedType), locals, requireMetaResolution = false)
+        val expected = whnf(expectedElaborated)
+
+        if (expected is Term.Pi && expected.visibility == Term.Visibility.IMPLICIT) {
+            if (term !is Term.Lambda || term.visibility != Term.Visibility.IMPLICIT) {
+                val freshVar = Term.Variable(expected.parameter, expected.parameterSpan)
+                val extended = extendLocalsWithBinder(locals, expected.parameter, expected.parameterType, expected.parameterSpan)
+                val expectedBody = substitute(expected.body, expected.parameter, freshVar)
+                return checkTermAgainst(term, expectedBody, extended)
+            }
+        }
+
+        if (term is Term.Lambda) {
+            if (expected !is Term.Pi) {
+                report(spanOf(term), if (term.visibility == Term.Visibility.IMPLICIT) "expected implicit function type" else "expected explicit function type")
+                return false
+            }
+            if (term.visibility != expected.visibility) {
+                report(spanOf(term), if (term.visibility == Term.Visibility.IMPLICIT) "expected implicit function type" else "expected explicit function type")
+                return false
+            }
+            if (!convertibleInContext(term.parameterType, expected.parameterType, locals)) {
+                report(term.parameterSpan, "Lambda binder type mismatch")
+                return false
+            }
+            val extended = extendLocalsWithBinder(locals, term.parameter, expected.parameterType, term.parameterSpan)
+            val expectedBody = substitute(expected.body, expected.parameter, Term.Variable(term.parameter, term.parameterSpan))
+            return checkTermAgainst(term.body, expectedBody, extended)
+        }
+
+        val inferred = inferType(term, locals) ?: return false
+        val instantiatedInferred = instantiateLeadingImplicitPis(inferred, locals, spanOf(term))
+        val inferredElaborated = elaborateImplicitApplications(zonk(instantiatedInferred), locals, requireMetaResolution = false)
+        if (!convertible(inferredElaborated, expected)) {
+            report(spanOf(term), "Type mismatch. Expected ${pretty(expected)}, got ${pretty(inferred)}")
+            return false
+        }
+        return true
+    }
+
+    private fun instantiateLeadingImplicitPis(type: Term, locals: Map<String, Term>, span: TextSpan?): Term {
+        var current = whnf(type)
+        while (current is Term.Pi && current.visibility == Term.Visibility.IMPLICIT) {
+            val meta = freshImplicitMeta(current.parameterType, locals, span)
+            current = whnf(substitute(current.body, current.parameter, meta))
+        }
+        return current
+    }
+
+    private fun elaborateImplicitApplications(
+        term: Term,
+        locals: Map<String, Term>,
+        requireMetaResolution: Boolean,
+    ): Term {
+        return when (term) {
+            is Term.Meta,
+            is Term.Variable,
+            is Term.Constant,
+            -> term
+
+            is Term.Typed -> Term.Typed(
+                term = elaborateImplicitApplications(term.term, locals, requireMetaResolution),
+                type = elaborateImplicitApplications(term.type, locals, requireMetaResolution),
+            )
+
+            is Term.Lambda -> term.copy(
+                parameterType = elaborateImplicitApplications(term.parameterType, locals, requireMetaResolution),
+                body = elaborateImplicitApplications(term.body, locals + (term.parameter to term.parameterType), requireMetaResolution),
+            )
+
+            is Term.Pi -> term.copy(
+                parameterType = elaborateImplicitApplications(term.parameterType, locals, requireMetaResolution),
+                body = elaborateImplicitApplications(term.body, locals + (term.parameter to term.parameterType), requireMetaResolution),
+            )
+
+            is Term.Application -> {
+                val function = elaborateImplicitApplications(term.function, locals, requireMetaResolution)
+                val argument = elaborateImplicitApplications(term.argument, locals, requireMetaResolution)
+
+                if (term.visibility == Term.Visibility.IMPLICIT) {
+                    return Term.Application(function, argument, Term.Visibility.IMPLICIT)
+                }
+
+                var fnType = inferType(function, locals)?.let { whnf(it) }
+                var elaboratedFunction = function
+                while (fnType is Term.Pi && fnType.visibility == Term.Visibility.IMPLICIT) {
+                    val meta = freshImplicitMeta(
+                        expectedType = fnType.parameterType,
+                        locals = locals,
+                        span = spanOf(function),
+                        requiresResolution = requireMetaResolution,
+                    )
+                    elaboratedFunction = Term.Application(elaboratedFunction, meta, Term.Visibility.IMPLICIT)
+                    fnType = whnf(substitute(fnType.body, fnType.parameter, meta))
+                }
+
+                Term.Application(elaboratedFunction, argument, Term.Visibility.EXPLICIT)
+            }
+        }
     }
 
     private fun extendLocalsWithBinder(
@@ -423,18 +612,41 @@ class TypeChecker(
         return defEq(a, b)
     }
 
+    private fun convertibleInContext(a: Term, b: Term, locals: Map<String, Term>): Boolean {
+        val left = elaborateImplicitApplications(zonk(a), locals, requireMetaResolution = false)
+        val right = elaborateImplicitApplications(zonk(b), locals, requireMetaResolution = false)
+        return defEq(left, right)
+    }
+
     private fun defEq(a: Term, b: Term): Boolean {
         traceStep("defEq: ${pretty(a)} ~ ${pretty(b)}")
-        val wa = whnf(a)
-        val wb = whnf(b)
+        val za = zonk(a)
+        val zb = zonk(b)
+
+        if (za is Term.Meta && trySolveMeta(za, zb)) {
+            return true
+        }
+        if (zb is Term.Meta && trySolveMeta(zb, za)) {
+            return true
+        }
+
+        val wa = whnf(za)
+        val wb = whnf(zb)
+
+        if (wa is Term.Meta && trySolveMeta(wa, wb)) {
+            return true
+        }
+        if (wb is Term.Meta && trySolveMeta(wb, wa)) {
+            return true
+        }
 
         if (structuralDefEq(wa, wb)) {
             traceStep("defEq success at whnf")
             return true
         }
 
-        val na = normalize(a)
-        val nb = normalize(b)
+        val na = normalize(za)
+        val nb = normalize(zb)
         val ok = alphaEquivalent(na, nb)
         traceStep("defEq fallback normalize: ${pretty(na)} ~ ${pretty(nb)} => $ok")
         return ok
@@ -453,10 +665,16 @@ class TypeChecker(
             }
 
             a is Term.Application && b is Term.Application -> {
+                if (a.visibility != b.visibility) {
+                    return false
+                }
                 defEq(a.function, b.function) && defEq(a.argument, b.argument)
             }
 
             a is Term.Lambda && b is Term.Lambda -> {
+                if (a.visibility != b.visibility) {
+                    return false
+                }
                 if (!defEq(a.parameterType, b.parameterType)) {
                     false
                 } else {
@@ -469,6 +687,9 @@ class TypeChecker(
             }
 
             a is Term.Pi && b is Term.Pi -> {
+                if (a.visibility != b.visibility) {
+                    return false
+                }
                 if (!defEq(a.parameterType, b.parameterType)) {
                     false
                 } else {
@@ -514,10 +735,10 @@ class TypeChecker(
             is Term.Typed -> whnf(term.term, unfolding)
             is Term.Application -> {
                 val fn = whnf(term.function, unfolding)
-                if (fn is Term.Lambda) {
+                if (fn is Term.Lambda && fn.visibility == term.visibility) {
                     whnf(substitute(fn.body, fn.parameter, term.argument), unfolding)
                 } else {
-                    val candidate = Term.Application(fn, term.argument)
+                    val candidate = Term.Application(fn, term.argument, term.visibility)
                     val rewrite = rewriteAtRoot(candidate)
                     if (rewrite != null) {
                         traceStep("whnf rewrite: ${rewrite.ruleName}")
@@ -561,6 +782,7 @@ class TypeChecker(
                 parameterType = normalize(term.parameterType, unfolding),
                 body = normalize(term.body, unfolding),
                 parameterSpan = term.parameterSpan,
+                visibility = term.visibility,
             )
 
             is Term.Lambda -> Term.Lambda(
@@ -568,15 +790,16 @@ class TypeChecker(
                 parameterType = normalize(term.parameterType, unfolding),
                 body = normalize(term.body, unfolding),
                 parameterSpan = term.parameterSpan,
+                visibility = term.visibility,
             )
 
             is Term.Application -> {
                 val fn = normalize(term.function, unfolding)
                 val arg = normalize(term.argument, unfolding)
-                if (fn is Term.Lambda) {
+                if (fn is Term.Lambda && fn.visibility == term.visibility) {
                     normalize(substitute(fn.body, fn.parameter, arg), unfolding)
                 } else {
-                    val normalizedApplication = Term.Application(fn, arg)
+                    val normalizedApplication = Term.Application(fn, arg, term.visibility)
                     applyRewriteRules(normalizedApplication, unfolding)
                 }
             }
@@ -679,12 +902,12 @@ class TypeChecker(
                 val reducedFunction = reduceOneStep(term.function, unfolding)
                 if (reducedFunction != null) {
                     return ReductionOutcome(
-                        term = Term.Application(reducedFunction.term, term.argument),
+                        term = Term.Application(reducedFunction.term, term.argument, term.visibility),
                         reason = "in function: ${reducedFunction.reason}",
                     )
                 }
 
-                if (term.function is Term.Lambda) {
+                if (term.function is Term.Lambda && term.function.visibility == term.visibility) {
                     return ReductionOutcome(
                         term = substitute(term.function.body, term.function.parameter, term.argument),
                         reason = "beta",
@@ -702,7 +925,7 @@ class TypeChecker(
                 val reducedArgument = reduceOneStep(term.argument, unfolding)
                 if (reducedArgument != null) {
                     return ReductionOutcome(
-                        term = Term.Application(term.function, reducedArgument.term),
+                        term = Term.Application(term.function, reducedArgument.term, term.visibility),
                         reason = "in argument: ${reducedArgument.reason}",
                     )
                 }
@@ -755,6 +978,9 @@ class TypeChecker(
             pattern is Term.Meta && target is Term.Meta -> pattern.id == target.id
 
             pattern is Term.Application && target is Term.Application -> {
+                if (pattern.visibility != target.visibility) {
+                    return false
+                }
                 matchRewritePattern(pattern.function, target.function, patternVariables, substitutions) &&
                     matchRewritePattern(pattern.argument, target.argument, patternVariables, substitutions)
             }
@@ -765,13 +991,15 @@ class TypeChecker(
             }
 
             pattern is Term.Lambda && target is Term.Lambda -> {
-                pattern.parameter == target.parameter &&
+                pattern.visibility == target.visibility &&
+                    pattern.parameter == target.parameter &&
                     matchRewritePattern(pattern.parameterType, target.parameterType, patternVariables, substitutions) &&
                     matchRewritePattern(pattern.body, target.body, patternVariables, substitutions)
             }
 
             pattern is Term.Pi && target is Term.Pi -> {
-                pattern.parameter == target.parameter &&
+                pattern.visibility == target.visibility &&
+                    pattern.parameter == target.parameter &&
                     matchRewritePattern(pattern.parameterType, target.parameterType, patternVariables, substitutions) &&
                     matchRewritePattern(pattern.body, target.body, patternVariables, substitutions)
             }
@@ -797,6 +1025,7 @@ class TypeChecker(
             is Term.Application -> Term.Application(
                 function = applySimultaneousSubstitution(term.function, substitutions),
                 argument = applySimultaneousSubstitution(term.argument, substitutions),
+                visibility = term.visibility,
             )
 
             is Term.Lambda -> {
@@ -806,6 +1035,7 @@ class TypeChecker(
                     parameterType = applySimultaneousSubstitution(term.parameterType, substitutions),
                     body = applySimultaneousSubstitution(term.body, nextSubstitutions),
                     parameterSpan = term.parameterSpan,
+                    visibility = term.visibility,
                 )
             }
 
@@ -816,6 +1046,7 @@ class TypeChecker(
                     parameterType = applySimultaneousSubstitution(term.parameterType, substitutions),
                     body = applySimultaneousSubstitution(term.body, nextSubstitutions),
                     parameterSpan = term.parameterSpan,
+                    visibility = term.visibility,
                 )
             }
         }
@@ -834,6 +1065,7 @@ class TypeChecker(
             is Term.Application -> Term.Application(
                 function = substitute(term.function, name, replacement),
                 argument = substitute(term.argument, name, replacement),
+                visibility = term.visibility,
             )
 
             is Term.Lambda -> {
@@ -850,6 +1082,7 @@ class TypeChecker(
                             parameterType = newParameterType,
                             body = substitute(renamedBody, name, replacement),
                             parameterSpan = term.parameterSpan,
+                            visibility = term.visibility,
                         )
                     } else {
                         term.copy(
@@ -874,6 +1107,7 @@ class TypeChecker(
                             parameterType = newParameterType,
                             body = substitute(renamedBody, name, replacement),
                             parameterSpan = term.parameterSpan,
+                            visibility = term.visibility,
                         )
                     } else {
                         term.copy(
@@ -883,6 +1117,86 @@ class TypeChecker(
                     }
                 }
             }
+        }
+    }
+
+    private fun freshImplicitMeta(
+        expectedType: Term,
+        locals: Map<String, Term>,
+        span: TextSpan?,
+        requiresResolution: Boolean = true,
+    ): Term.Meta {
+        val id = nextMetaId++
+        val safeSpan = span ?: TextSpan(0, 0)
+        metaContext[id] = MetaEntry(
+            id = id,
+            expectedType = zonk(expectedType),
+            solution = null,
+            allowedLocals = locals.keys,
+            span = safeSpan,
+            requiresResolution = requiresResolution,
+        )
+        return Term.Meta(id, safeSpan)
+    }
+
+    private fun zonk(term: Term): Term {
+        return when (term) {
+            is Term.Meta -> {
+                val solved = metaContext[term.id]?.solution
+                if (solved == null) {
+                    term
+                } else {
+                    zonk(solved)
+                }
+            }
+
+            is Term.Variable,
+            is Term.Constant,
+            -> term
+
+            is Term.Typed -> Term.Typed(zonk(term.term), zonk(term.type))
+            is Term.Application -> Term.Application(zonk(term.function), zonk(term.argument), term.visibility)
+            is Term.Lambda -> term.copy(parameterType = zonk(term.parameterType), body = zonk(term.body))
+            is Term.Pi -> term.copy(parameterType = zonk(term.parameterType), body = zonk(term.body))
+        }
+    }
+
+    private fun trySolveMeta(meta: Term.Meta, term: Term): Boolean {
+        val entry = metaContext.getOrPut(meta.id) {
+            MetaEntry(meta.id, expectedType = null, solution = null, allowedLocals = emptySet(), span = meta.span)
+        }
+
+        val solved = entry.solution
+        if (solved != null) {
+            return defEq(solved, term)
+        }
+
+        val candidate = zonk(term)
+        if (containsMeta(candidate, meta.id)) {
+            return false
+        }
+
+        val unknownLocals = freeVariables(candidate)
+            .filter { it !in globals.keys && it !in entry.allowedLocals }
+        if (unknownLocals.isNotEmpty()) {
+            return false
+        }
+
+        entry.solution = candidate
+        return true
+    }
+
+    private fun containsMeta(term: Term, id: Int): Boolean {
+        return when (term) {
+            is Term.Meta -> term.id == id
+            is Term.Variable,
+            is Term.Constant,
+            -> false
+
+            is Term.Typed -> containsMeta(term.term, id) || containsMeta(term.type, id)
+            is Term.Application -> containsMeta(term.function, id) || containsMeta(term.argument, id)
+            is Term.Lambda -> containsMeta(term.parameterType, id) || containsMeta(term.body, id)
+            is Term.Pi -> containsMeta(term.parameterType, id) || containsMeta(term.body, id)
         }
     }
 
@@ -951,15 +1265,19 @@ class TypeChecker(
                 alphaEquivalent(a.term, b.term, env) && alphaEquivalent(a.type, b.type, env)
 
             a is Term.Application && b is Term.Application ->
-                alphaEquivalent(a.function, b.function, env) && alphaEquivalent(a.argument, b.argument, env)
+                a.visibility == b.visibility &&
+                    alphaEquivalent(a.function, b.function, env) &&
+                    alphaEquivalent(a.argument, b.argument, env)
 
             a is Term.Lambda && b is Term.Lambda -> {
-                alphaEquivalent(a.parameterType, b.parameterType, env) &&
+                a.visibility == b.visibility &&
+                    alphaEquivalent(a.parameterType, b.parameterType, env) &&
                     alphaEquivalent(a.body, b.body, env + (a.parameter to b.parameter))
             }
 
             a is Term.Pi && b is Term.Pi -> {
-                alphaEquivalent(a.parameterType, b.parameterType, env) &&
+                a.visibility == b.visibility &&
+                    alphaEquivalent(a.parameterType, b.parameterType, env) &&
                     alphaEquivalent(a.body, b.body, env + (a.parameter to b.parameter))
             }
 
@@ -983,9 +1301,29 @@ class TypeChecker(
                 is Term.Variable -> term.name
                 is Term.Constant -> term.name
                 is Term.Typed -> "(${prettyTerm(term.term)} : ${prettyTerm(term.type)})"
-                is Term.Application -> "(${prettyTerm(term.function)} ${prettyTerm(term.argument)})"
-                is Term.Lambda -> "(λ${term.parameter} => ${prettyTerm(term.body)})"
-                is Term.Pi -> "(Π(${term.parameter} : ${prettyTerm(term.parameterType)}) => ${prettyTerm(term.body)})"
+                is Term.Application -> {
+                    if (term.visibility == Term.Visibility.IMPLICIT) {
+                        "(${prettyTerm(term.function)} {${prettyTerm(term.argument)}})"
+                    } else {
+                        "(${prettyTerm(term.function)} ${prettyTerm(term.argument)})"
+                    }
+                }
+
+                is Term.Lambda -> {
+                    if (term.visibility == Term.Visibility.IMPLICIT) {
+                        "(λ{${term.parameter} : ${prettyTerm(term.parameterType)}} => ${prettyTerm(term.body)})"
+                    } else {
+                        "(λ(${term.parameter} : ${prettyTerm(term.parameterType)}) => ${prettyTerm(term.body)})"
+                    }
+                }
+
+                is Term.Pi -> {
+                    if (term.visibility == Term.Visibility.IMPLICIT) {
+                        "({${term.parameter} : ${prettyTerm(term.parameterType)}} -> ${prettyTerm(term.body)})"
+                    } else {
+                        "((${term.parameter} : ${prettyTerm(term.parameterType)}) -> ${prettyTerm(term.body)})"
+                    }
+                }
             }
         }
     }
@@ -1045,6 +1383,15 @@ class TypeChecker(
     private data class GlobalEntry(
         val type: Term,
         val implementation: Term?,
+    )
+
+    private data class MetaEntry(
+        val id: Int,
+        var expectedType: Term?,
+        var solution: Term?,
+        val allowedLocals: Set<String>,
+        val span: TextSpan,
+        val requiresResolution: Boolean = false,
     )
 
     private data class RegisteredRewriteRule(
