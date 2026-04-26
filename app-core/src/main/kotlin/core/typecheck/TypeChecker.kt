@@ -371,8 +371,15 @@ class TypeChecker(
         val inferred = when (term) {
             is Term.Meta -> {
                 val entry = metaContext.getOrPut(term.id) {
-                    MetaEntry(id = term.id, expectedType = null, solution = null, allowedLocals = locals.keys, span = term.span)
+                    MetaEntry(
+                        id = term.id,
+                        expectedType = null,
+                        solution = null,
+                        allowedLocals = locals.keys.toMutableSet(),
+                        span = term.span,
+                    )
                 }
+                entry.allowedLocals.addAll(locals.keys)
                 entry.solution?.let { inferType(it, locals) } ?: entry.expectedType ?: typeUniverseTerm()
             }
 
@@ -501,7 +508,11 @@ class TypeChecker(
                 return false
             }
             if (!convertibleInContext(term.parameterType, expected.parameterType, locals)) {
-                report(term.parameterSpan, "Lambda binder type mismatch")
+                if (containsUnresolvedMeta(term.parameterType)) {
+                    report(term.parameterSpan, "cannot infer type for lambda binder '${term.parameter}'")
+                } else {
+                    report(term.parameterSpan, "Lambda binder type mismatch")
+                }
                 return false
             }
             val extended = extendLocalsWithBinder(locals, term.parameter, expected.parameterType, term.parameterSpan)
@@ -1132,7 +1143,7 @@ class TypeChecker(
             id = id,
             expectedType = zonk(expectedType),
             solution = null,
-            allowedLocals = locals.keys,
+            allowedLocals = locals.keys.toMutableSet(),
             span = safeSpan,
             requiresResolution = requiresResolution,
         )
@@ -1163,7 +1174,7 @@ class TypeChecker(
 
     private fun trySolveMeta(meta: Term.Meta, term: Term): Boolean {
         val entry = metaContext.getOrPut(meta.id) {
-            MetaEntry(meta.id, expectedType = null, solution = null, allowedLocals = emptySet(), span = meta.span)
+            MetaEntry(meta.id, expectedType = null, solution = null, allowedLocals = mutableSetOf(), span = meta.span)
         }
 
         val solved = entry.solution
@@ -1172,6 +1183,9 @@ class TypeChecker(
         }
 
         val candidate = zonk(term)
+        if (entry.allowedLocals.isEmpty()) {
+            entry.allowedLocals.addAll(freeVariables(candidate))
+        }
         if (containsMeta(candidate, meta.id)) {
             return false
         }
@@ -1184,6 +1198,20 @@ class TypeChecker(
 
         entry.solution = candidate
         return true
+    }
+
+    private fun containsUnresolvedMeta(term: Term): Boolean {
+        return when (term) {
+            is Term.Meta -> metaContext[term.id]?.solution == null
+            is Term.Variable,
+            is Term.Constant,
+            -> false
+
+            is Term.Typed -> containsUnresolvedMeta(term.term) || containsUnresolvedMeta(term.type)
+            is Term.Application -> containsUnresolvedMeta(term.function) || containsUnresolvedMeta(term.argument)
+            is Term.Lambda -> containsUnresolvedMeta(term.parameterType) || containsUnresolvedMeta(term.body)
+            is Term.Pi -> containsUnresolvedMeta(term.parameterType) || containsUnresolvedMeta(term.body)
+        }
     }
 
     private fun containsMeta(term: Term, id: Int): Boolean {
@@ -1389,7 +1417,7 @@ class TypeChecker(
         val id: Int,
         var expectedType: Term?,
         var solution: Term?,
-        val allowedLocals: Set<String>,
+        val allowedLocals: MutableSet<String>,
         val span: TextSpan,
         val requiresResolution: Boolean = false,
     )

@@ -139,4 +139,31 @@ class ImplicitArgumentsTypeCheckTest {
         val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
         assertTrue(diagnostics.isEmpty(), "Expected no diagnostics for cong snippet, got: $diagnostics")
     }
+
+    @Test
+    fun infersTypeForUnannotatedFunctionBinderInCongStyleLambda() {
+        val source = """
+            Id : {A : Type} → A → A → Type;
+            refl : {A : Type} → (x : A) → Id{A}(x, x);
+
+            J :
+              (A : Type) →
+              (x : A) →
+              (P : (y : A) → Id(x, y) → Type) →
+              P(x, refl(x)) →
+              (y : A) →
+              (p : Id(x, y)) →
+              P(y, p);
+
+            cong : ∀(A : Type), (B : Type), (f : A → B), (x : A), (y : A) => Id(x, y) → Id(f(x), f(y))
+              := λ A, B, f, (x : A), (y : A), (p : Id(x, y)) =>
+                J(A, x, λ(y : A), (p : Id(x, y)) => Id(f(x), f(y)),
+                  refl(f(x)),
+                  y, p
+                );
+        """.trimIndent()
+
+        val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
+        assertTrue(diagnostics.isEmpty(), "Expected no diagnostics for unannotated f binder, got: $diagnostics")
+    }
 }
