@@ -83,6 +83,12 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             TokenType.COLON -> parser.tokens
                 .subList((parser.cursor + 2).coerceAtMost(parser.tokens.size), parser.tokens.size)
                 .any { it.type == TokenType.ASSIGN || it.type == TokenType.SEMICOLON }
+            TokenType.LPAREN, TokenType.LBRACE -> parser.tokens
+                .subList((parser.cursor + 1).coerceAtMost(parser.tokens.size), parser.tokens.size)
+                .any { it.type == TokenType.ASSIGN || it.type == TokenType.SEMICOLON }
+            TokenType.IDENT -> parser.peek(2).type == TokenType.COLON && parser.tokens
+                .subList((parser.cursor + 1).coerceAtMost(parser.tokens.size), parser.tokens.size)
+                .any { it.type == TokenType.ASSIGN || it.type == TokenType.SEMICOLON }
 
             else -> false
         }
@@ -162,7 +168,12 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             return false
         }
         val next = parser.peek(1).type
-        return next == TokenType.COLON || next == TokenType.ASSIGN || next == TokenType.SEMICOLON
+        return next == TokenType.COLON ||
+            next == TokenType.ASSIGN ||
+            next == TokenType.SEMICOLON ||
+            next == TokenType.LPAREN ||
+            next == TokenType.LBRACE ||
+            (next == TokenType.IDENT && parser.peek(2).type == TokenType.COLON)
     }
 
     private fun isDefinitionNameToken(token: Token): Boolean {
@@ -201,12 +212,46 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             val nameToken = parser.advance()
             var type: Term? = null
             var implementation: Term? = null
+            val telescopeBinders = mutableListOf<TelescopeBinder>()
 
             if (parser.match(TokenType.COLON)) {
                 type = parser.parseExpression(diagnostics)
+            } else if (isTelescopeStart(parser.peek())) {
+                telescopeBinders += parseTelescopeBinders(diagnostics)
+                parser.consume(TokenType.COLON, "Expected ':' before telescope result type", diagnostics)
+                type = parser.parseExpression(diagnostics)
             }
+
             if (parser.match(TokenType.ASSIGN)) {
                 implementation = parser.parseExpression(diagnostics)
+            }
+
+            val desugaredType = if (telescopeBinders.isEmpty() || type == null) {
+                type
+            } else {
+                telescopeBinders.asReversed().fold(type) { acc, binder ->
+                    Term.Pi(
+                        parameter = binder.name,
+                        parameterType = binder.type,
+                        body = acc,
+                        parameterSpan = binder.span,
+                        visibility = binder.visibility,
+                    )
+                }
+            }
+
+            val desugaredImplementation = if (telescopeBinders.isEmpty() || implementation == null) {
+                implementation
+            } else {
+                telescopeBinders.asReversed().fold(implementation) { acc, binder ->
+                    Term.Lambda(
+                        parameter = binder.name,
+                        parameterType = binder.type,
+                        body = acc,
+                        parameterSpan = binder.span,
+                        visibility = binder.visibility,
+                    )
+                }
             }
 
             val terminatorSpan = if (parser.match(TokenType.SEMICOLON)) {
@@ -219,8 +264,8 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             definitions.add(
                 Definition(
                     name = nameToken.text,
-                    type = type,
-                    implementation = implementation,
+                    type = desugaredType,
+                    implementation = desugaredImplementation,
                     nameSpan = TextSpan(nameToken.startOffset, nameToken.endOffset),
                     terminatorSpan = terminatorSpan,
                 ),
@@ -312,4 +357,76 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         )
         return Token(TokenType.REWRITE_ARROW, "", token.line, token.column, token.startOffset, token.endOffset)
     }
+
+    private fun isTelescopeStart(token: Token): Boolean {
+        return token.type == TokenType.LPAREN ||
+            token.type == TokenType.LBRACE ||
+            (token.type == TokenType.IDENT && parser.peek(1).type == TokenType.COLON)
+    }
+
+    private fun parseTelescopeBinders(diagnostics: MutableList<Diagnostic>): List<TelescopeBinder> {
+        val binders = mutableListOf<TelescopeBinder>()
+        while (isTelescopeStart(parser.peek())) {
+            binders += parseTelescopeBinder(diagnostics)
+            if (!parser.match(TokenType.COMMA)) {
+                break
+            }
+        }
+        return binders
+    }
+
+    private fun parseTelescopeBinder(diagnostics: MutableList<Diagnostic>): TelescopeBinder {
+        if (parser.match(TokenType.LBRACE)) {
+            val nameToken = parser.consume(TokenType.IDENT, "Expected identifier in telescope binder", diagnostics)
+            val binderType = if (parser.match(TokenType.COLON)) {
+                parser.parseExpression(diagnostics, TermSyntaxParser.TYPE_ANNOTATION_PRECEDENCE + 1)
+            } else {
+                diagnostics += Diagnostic(
+                    message = "Expected ':' in implicit telescope binder",
+                    line = nameToken.line,
+                    column = nameToken.column,
+                    startOffset = nameToken.startOffset,
+                    endOffset = nameToken.endOffset,
+                )
+                parser.freshMeta(TextSpan(nameToken.startOffset, nameToken.endOffset))
+            }
+            parser.consume(TokenType.RBRACE, "Expected '}' after implicit telescope binder", diagnostics)
+            return TelescopeBinder(
+                name = nameToken.text.ifBlank { "_" },
+                type = binderType,
+                span = TextSpan(nameToken.startOffset, nameToken.endOffset),
+                visibility = Term.Visibility.IMPLICIT,
+            )
+        }
+
+        if (parser.match(TokenType.LPAREN)) {
+            val nameToken = parser.consume(TokenType.IDENT, "Expected identifier in telescope binder", diagnostics)
+            parser.consume(TokenType.COLON, "Expected ':' in telescope binder", diagnostics)
+            val binderType = parser.parseExpression(diagnostics, TermSyntaxParser.TYPE_ANNOTATION_PRECEDENCE + 1)
+            parser.consume(TokenType.RPAREN, "Expected ')' after telescope binder", diagnostics)
+            return TelescopeBinder(
+                name = nameToken.text.ifBlank { "_" },
+                type = binderType,
+                span = TextSpan(nameToken.startOffset, nameToken.endOffset),
+                visibility = Term.Visibility.EXPLICIT,
+            )
+        }
+
+        val nameToken = parser.consume(TokenType.IDENT, "Expected identifier in telescope binder", diagnostics)
+        parser.consume(TokenType.COLON, "Expected ':' in telescope binder", diagnostics)
+        val binderType = parser.parseExpression(diagnostics, TermSyntaxParser.TYPE_ANNOTATION_PRECEDENCE + 1)
+        return TelescopeBinder(
+            name = nameToken.text.ifBlank { "_" },
+            type = binderType,
+            span = TextSpan(nameToken.startOffset, nameToken.endOffset),
+            visibility = Term.Visibility.EXPLICIT,
+        )
+    }
+
+    private data class TelescopeBinder(
+        val name: String,
+        val type: Term,
+        val span: TextSpan,
+        val visibility: Term.Visibility,
+    )
 }

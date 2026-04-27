@@ -166,4 +166,18 @@ class ImplicitArgumentsTypeCheckTest {
         val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
         assertTrue(diagnostics.isEmpty(), "Expected no diagnostics for unannotated f binder, got: $diagnostics")
     }
+
+    @Test
+    fun supportsTelescopeStyleDefinitionSugar() {
+        val source = """
+            id {A : Type}, x : A : A := x;
+
+            ℕ : Type;
+            zero : ℕ;
+            test : ℕ := id(zero);
+        """.trimIndent()
+
+        val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
+        assertTrue(diagnostics.isEmpty(), "Expected no diagnostics for telescope sugar, got: $diagnostics")
+    }
 }
