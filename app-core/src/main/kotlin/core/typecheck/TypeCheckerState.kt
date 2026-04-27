@@ -99,6 +99,10 @@ internal fun maxMetaIdInDocument(document: core.model.ParsedDocument): Int {
             is Term.Application -> maxOf(maxMeta(term.function), maxMeta(term.argument))
             is Term.Lambda -> maxOf(maxMeta(term.parameterType), maxMeta(term.body))
             is Term.Pi -> maxOf(maxMeta(term.parameterType), maxMeta(term.body))
+            is Term.Case -> {
+                val branchMax = term.branches.maxOfOrNull { maxMeta(it.body) } ?: -1
+                maxOf(maxMeta(term.scrutinee), branchMax)
+            }
         }
     }
 

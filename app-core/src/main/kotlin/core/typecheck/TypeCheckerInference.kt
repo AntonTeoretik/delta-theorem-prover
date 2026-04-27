@@ -77,6 +77,11 @@ internal fun TypeChecker.inferType(term: Term, locals: Map<String, Term>): Term?
         is Term.Application -> {
             inferApplicationType(term, locals)
         }
+
+        is Term.Case -> {
+            report(term.span, "cannot infer type of case expression; type annotation required")
+            null
+        }
     }
     if (inferred != null) {
         inferredTypes[term] = inferred
@@ -156,6 +161,14 @@ internal fun TypeChecker.checkTermAgainst(term: Term, expectedType: Term, locals
         return checkTermAgainst(term.body, expectedBody, extended)
     }
 
+    if (term is Term.Case) {
+        val ok = checkCaseTermAgainst(term, expected, locals)
+        if (ok) {
+            inferredTypes[term] = expected
+        }
+        return ok
+    }
+
     val inferred = inferType(term, locals) ?: return false
     val instantiatedInferred = instantiateLeadingImplicitPis(inferred, locals, spanOf(term))
     val inferredElaborated = elaborateImplicitApplications(zonk(instantiatedInferred), locals, requireMetaResolution = false)
@@ -224,6 +237,15 @@ internal fun TypeChecker.elaborateImplicitApplications(
 
             Term.Application(elaboratedFunction, argument, Term.Visibility.EXPLICIT)
         }
+
+        is Term.Case -> Term.Case(
+            scrutinee = elaborateImplicitApplications(term.scrutinee, locals, requireMetaResolution),
+            branches = term.branches.map { branch ->
+                val branchLocals = locals + branch.parameters.associate { it.name to typeUniverseTerm() }
+                branch.copy(body = elaborateImplicitApplications(branch.body, branchLocals, requireMetaResolution))
+            },
+            span = term.span,
+        )
     }
 }
 
@@ -404,6 +426,34 @@ internal fun TypeChecker.substitute(term: Term, name: String, replacement: Term)
                 }
             }
         }
+
+        is Term.Case -> {
+            val newScrutinee = substitute(term.scrutinee, name, replacement)
+            val replacementVars = freeVariables(replacement)
+            val newBranches = term.branches.map { branch ->
+                var nextBranch = branch
+                var nextBody = branch.body
+                val boundNames = branch.parameters.map { it.name }
+                val renames = linkedMapOf<String, String>()
+                boundNames.forEach { boundName ->
+                    if (boundName != name && boundName in replacementVars) {
+                        val fresh = freshName(boundName, nextBody, replacement)
+                        renames[boundName] = fresh
+                        nextBody = substitute(nextBody, boundName, Term.Variable(fresh, branch.constructorSpan))
+                    }
+                }
+                val updatedParameters = branch.parameters.map { parameter ->
+                    val fresh = renames[parameter.name]
+                    if (fresh == null) parameter else parameter.copy(name = fresh)
+                }
+                nextBranch = nextBranch.copy(parameters = updatedParameters)
+                if (name !in boundNames) {
+                    nextBody = substitute(nextBody, name, replacement)
+                }
+                nextBranch.copy(body = nextBody)
+            }
+            Term.Case(newScrutinee, newBranches, term.span)
+        }
     }
 }
 
@@ -445,6 +495,10 @@ internal fun TypeChecker.zonk(term: Term): Term {
         is Term.Application -> Term.Application(zonk(term.function), zonk(term.argument), term.visibility)
         is Term.Lambda -> term.copy(parameterType = zonk(term.parameterType), body = zonk(term.body))
         is Term.Pi -> term.copy(parameterType = zonk(term.parameterType), body = zonk(term.body))
+        is Term.Case -> term.copy(
+            scrutinee = zonk(term.scrutinee),
+            branches = term.branches.map { it.copy(body = zonk(it.body)) },
+        )
     }
 }
 
@@ -487,6 +541,7 @@ internal fun TypeChecker.containsUnresolvedMeta(term: Term): Boolean {
         is Term.Application -> containsUnresolvedMeta(term.function) || containsUnresolvedMeta(term.argument)
         is Term.Lambda -> containsUnresolvedMeta(term.parameterType) || containsUnresolvedMeta(term.body)
         is Term.Pi -> containsUnresolvedMeta(term.parameterType) || containsUnresolvedMeta(term.body)
+        is Term.Case -> containsUnresolvedMeta(term.scrutinee) || term.branches.any { containsUnresolvedMeta(it.body) }
     }
 }
 
@@ -501,6 +556,7 @@ internal fun TypeChecker.containsMeta(term: Term, id: Int): Boolean {
         is Term.Application -> containsMeta(term.function, id) || containsMeta(term.argument, id)
         is Term.Lambda -> containsMeta(term.parameterType, id) || containsMeta(term.body, id)
         is Term.Pi -> containsMeta(term.parameterType, id) || containsMeta(term.body, id)
+        is Term.Case -> containsMeta(term.scrutinee, id) || term.branches.any { containsMeta(it.body, id) }
     }
 }
 
@@ -515,6 +571,14 @@ internal fun TypeChecker.freeVariables(term: Term, bound: Set<String> = emptySet
         is Term.Application -> freeVariables(term.function, bound) + freeVariables(term.argument, bound)
         is Term.Lambda -> freeVariables(term.parameterType, bound) + freeVariables(term.body, bound + term.parameter)
         is Term.Pi -> freeVariables(term.parameterType, bound) + freeVariables(term.body, bound + term.parameter)
+        is Term.Case -> {
+            val scrutineeVars = freeVariables(term.scrutinee, bound)
+            val branchVars = term.branches.flatMap { branch ->
+                val branchBound = bound + branch.parameters.map { it.name }
+                freeVariables(branch.body, branchBound).toList()
+            }.toSet()
+            scrutineeVars + branchVars
+        }
     }
 }
 
@@ -536,6 +600,14 @@ internal fun TypeChecker.collectRuleVariables(term: Term, bound: Set<String> = e
         is Term.Application -> collectRuleVariables(term.function, bound) + collectRuleVariables(term.argument, bound)
         is Term.Lambda -> collectRuleVariables(term.parameterType, bound) + collectRuleVariables(term.body, bound + term.parameter)
         is Term.Pi -> collectRuleVariables(term.parameterType, bound) + collectRuleVariables(term.body, bound + term.parameter)
+        is Term.Case -> {
+            val scrutineeVars = collectRuleVariables(term.scrutinee, bound)
+            val branchVars = term.branches.flatMap { branch ->
+                val branchBound = bound + branch.parameters.map { it.name }
+                collectRuleVariables(branch.body, branchBound).toList()
+            }.toSet()
+            scrutineeVars + branchVars
+        }
     }
 }
 
@@ -572,6 +644,26 @@ internal fun TypeChecker.alphaEquivalent(a: Term, b: Term, env: Map<String, Stri
             a.visibility == b.visibility &&
                 alphaEquivalent(a.parameterType, b.parameterType, env) &&
                 alphaEquivalent(a.body, b.body, env + (a.parameter to b.parameter))
+        }
+
+        a is Term.Case && b is Term.Case -> {
+            if (!alphaEquivalent(a.scrutinee, b.scrutinee, env)) {
+                return false
+            }
+            if (a.branches.size != b.branches.size) {
+                return false
+            }
+            a.branches.zip(b.branches).all { (leftBranch, rightBranch) ->
+                if (leftBranch.constructorName != rightBranch.constructorName) {
+                    return@all false
+                }
+                if (leftBranch.parameters.size != rightBranch.parameters.size) {
+                    return@all false
+                }
+                val branchEnv = leftBranch.parameters.zip(rightBranch.parameters)
+                    .fold(env) { acc, (leftParam, rightParam) -> acc + (leftParam.name to rightParam.name) }
+                alphaEquivalent(leftBranch.body, rightBranch.body, branchEnv)
+            }
         }
 
         else -> false

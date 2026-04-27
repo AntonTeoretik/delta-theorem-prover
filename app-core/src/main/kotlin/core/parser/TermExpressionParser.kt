@@ -10,6 +10,7 @@ internal class TermExpressionParser(private val parser: TermSyntaxParser) {
         var expression = when {
             parser.match(TokenType.LAMBDA) -> parseLambdaExpression(diagnostics)
             parser.match(TokenType.FORALL) -> parseForallExpression(diagnostics)
+            isKeyword(parser.peek(), "case") -> parseCaseExpression(diagnostics)
             else -> parseApplication(diagnostics)
         }
 
@@ -310,6 +311,171 @@ internal class TermExpressionParser(private val parser: TermSyntaxParser) {
             parser.advance()
         }
         return Term.Variable("_", TextSpan(token.startOffset, token.endOffset))
+    }
+
+    private fun parseCaseExpression(diagnostics: MutableList<Diagnostic>): Term {
+        val caseToken = parser.advance()
+        val scrutinee = parseExpression(diagnostics)
+        consumeKeyword("of", "Expected 'of' after case scrutinee", diagnostics)
+
+        val branches = if (parser.match(TokenType.LBRACE)) {
+            parseBracedCaseBranches(diagnostics)
+        } else {
+            parseUnbracedCaseBranches(diagnostics)
+        }
+
+        val endOffset = if (branches.isNotEmpty()) {
+            spanOfBranchBody(branches.last()).endOffset
+        } else {
+            parser.previous().endOffset
+        }
+        return Term.Case(
+            scrutinee = scrutinee,
+            branches = branches,
+            span = TextSpan(caseToken.startOffset, endOffset),
+        )
+    }
+
+    private fun parseBracedCaseBranches(diagnostics: MutableList<Diagnostic>): List<Term.CaseBranch> {
+        val branches = mutableListOf<Term.CaseBranch>()
+        while (!parser.isAtEnd() && !parser.check(TokenType.RBRACE)) {
+            maybeConsumeCasePipe()
+            branches += parseCaseBranch(diagnostics)
+            if (parser.match(TokenType.SEMICOLON)) {
+                continue
+            }
+            if (!parser.check(TokenType.RBRACE)) {
+                val token = parser.peek()
+                diagnostics += Diagnostic(
+                    message = "Expected ';' between case branches",
+                    line = token.line,
+                    column = token.column,
+                    startOffset = token.startOffset,
+                    endOffset = token.endOffset,
+                )
+                if (!parser.isAtEnd()) {
+                    parser.advance()
+                }
+            }
+        }
+        parser.consume(TokenType.RBRACE, "Expected '}' after case branches", diagnostics)
+        return branches
+    }
+
+    private fun parseUnbracedCaseBranches(diagnostics: MutableList<Diagnostic>): List<Term.CaseBranch> {
+        val branches = mutableListOf<Term.CaseBranch>()
+        maybeConsumeCasePipe()
+        branches += parseCaseBranch(diagnostics)
+        while (maybeConsumeCasePipe()) {
+            branches += parseCaseBranch(diagnostics)
+        }
+        return branches
+    }
+
+    private fun maybeConsumeCasePipe(): Boolean {
+        val token = parser.peek()
+        if (token.type != TokenType.SYMBOLIC_IDENT || token.text != "|") {
+            return false
+        }
+        parser.advance()
+        return true
+    }
+
+    private fun parseCaseBranch(diagnostics: MutableList<Diagnostic>): Term.CaseBranch {
+        val constructorToken = consumeNameSegmentToken() ?: run {
+            val token = parser.peek()
+            diagnostics += Diagnostic(
+                message = "Expected constructor pattern in case branch",
+                line = token.line,
+                column = token.column,
+                startOffset = token.startOffset,
+                endOffset = token.endOffset,
+            )
+            return Term.CaseBranch(
+                constructorName = "_",
+                constructorSpan = TextSpan(token.startOffset, token.endOffset),
+                parameters = emptyList(),
+                body = parseFallbackCaseBranchBody(diagnostics),
+            )
+        }
+
+        val (constructorName, constructorEndOffset) = parseQualifiedName(constructorToken)
+        val constructorSpan = TextSpan(constructorToken.startOffset, constructorEndOffset)
+        val parameters = parseCasePatternParameters(diagnostics)
+        parser.consume(TokenType.FAT_ARROW, "Expected '=>' after case pattern", diagnostics)
+        val body = parseExpression(diagnostics)
+        return Term.CaseBranch(
+            constructorName = constructorName,
+            constructorSpan = constructorSpan,
+            parameters = parameters,
+            body = body,
+        )
+    }
+
+    private fun parseFallbackCaseBranchBody(diagnostics: MutableList<Diagnostic>): Term {
+        if (!parser.isAtEnd()) {
+            parser.advance()
+        }
+        return parseExpression(diagnostics)
+    }
+
+    private fun parseCasePatternParameters(diagnostics: MutableList<Diagnostic>): List<Term.CasePatternParameter> {
+        if (!parser.match(TokenType.LPAREN)) {
+            return emptyList()
+        }
+        if (parser.match(TokenType.RPAREN)) {
+            return emptyList()
+        }
+
+        val parameters = mutableListOf<Term.CasePatternParameter>()
+        parameters += parseCasePatternParameter(diagnostics)
+        while (parser.match(TokenType.COMMA)) {
+            parameters += parseCasePatternParameter(diagnostics)
+        }
+        parser.consume(TokenType.RPAREN, "Expected ')' after case pattern parameters", diagnostics)
+        return parameters
+    }
+
+    private fun parseCasePatternParameter(diagnostics: MutableList<Diagnostic>): Term.CasePatternParameter {
+        val identifier = parser.consume(TokenType.IDENT, "Expected identifier in case pattern", diagnostics)
+        val name = identifier.text.ifBlank { "_" }
+        return Term.CasePatternParameter(name, TextSpan(identifier.startOffset, identifier.endOffset))
+    }
+
+    private fun spanOfBranchBody(branch: Term.CaseBranch): TextSpan {
+        return spanOfTerm(branch.body)
+    }
+
+    private fun spanOfTerm(term: Term): TextSpan {
+        return when (term) {
+            is Term.Variable -> term.span
+            is Term.Constant -> term.span
+            is Term.Meta -> term.span
+            is Term.Lambda -> term.parameterSpan
+            is Term.Pi -> term.parameterSpan
+            is Term.Typed -> spanOfTerm(term.term)
+            is Term.Application -> spanOfTerm(term.argument)
+            is Term.Case -> term.span
+        }
+    }
+
+    private fun consumeKeyword(keyword: String, message: String, diagnostics: MutableList<Diagnostic>): Token {
+        val token = parser.peek()
+        if (isKeyword(token, keyword)) {
+            return parser.advance()
+        }
+        diagnostics += Diagnostic(
+            message = message,
+            line = token.line,
+            column = token.column,
+            startOffset = token.startOffset,
+            endOffset = token.endOffset,
+        )
+        return Token(TokenType.IDENT, "", token.line, token.column, token.startOffset, token.endOffset)
+    }
+
+    private fun isKeyword(token: Token, keyword: String): Boolean {
+        return token.type == TokenType.IDENT && token.text == keyword
     }
 
     private fun consumeNameSegmentToken(): Token? {

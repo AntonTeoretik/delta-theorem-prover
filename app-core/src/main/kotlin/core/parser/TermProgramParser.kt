@@ -951,6 +951,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             is Term.Application -> containsTypeName(term.function, typeName) || containsTypeName(term.argument, typeName)
             is Term.Lambda -> containsTypeName(term.parameterType, typeName) || containsTypeName(term.body, typeName)
             is Term.Pi -> containsTypeName(term.parameterType, typeName) || containsTypeName(term.body, typeName)
+            is Term.Case -> containsTypeName(term.scrutinee, typeName) || term.branches.any { containsTypeName(it.body, typeName) }
         }
     }
 

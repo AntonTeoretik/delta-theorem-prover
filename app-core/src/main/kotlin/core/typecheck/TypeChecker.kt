@@ -115,6 +115,18 @@ class TypeChecker(
                         "((${term.parameter} : ${prettyTerm(term.parameterType)}) -> ${prettyTerm(term.body)})"
                     }
                 }
+
+                is Term.Case -> {
+                    val branches = term.branches.joinToString("; ") { branch ->
+                        val pattern = if (branch.parameters.isEmpty()) {
+                            branch.constructorName
+                        } else {
+                            "${branch.constructorName}(${branch.parameters.joinToString(",") { it.name }})"
+                        }
+                        "$pattern => ${prettyTerm(branch.body)}"
+                    }
+                    "(case ${prettyTerm(term.scrutinee)} of { $branches })"
+                }
             }
         }
     }

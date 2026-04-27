@@ -168,6 +168,10 @@ function drawAppNode(ctx, node) {
   }
 }
 
+function drawCaseNode(ctx, node) {
+  drawSquareNode(ctx, node, 'case', '#f3e8db', '#3d3a2d', '#d7b26a');
+}
+
 function drawPorts(ctx, node, isFreeVariableNode) {
   const greenPortColor = isFreeVariableNode ? 'rgba(157, 167, 255, 0.88)' : '#72ca86';
   const rootGreenPortColor = node.type === 'ROOT' ? 'rgba(157, 167, 255, 0.88)' : greenPortColor;
@@ -285,6 +289,8 @@ function createRenderer({ canvas, ctx, statsElement, view }) {
         drawRootNode(ctx, node, payload.freeVariableNames || []);
       } else if (node.type === 'APP') {
         drawAppNode(ctx, node);
+      } else if (node.type === 'CASE') {
+        drawCaseNode(ctx, node);
       } else if (node.type === 'TYPE') {
         drawSquareNode(ctx, node, ':', '#f3e8db');
       } else if (node.type === 'LAMBDA') {

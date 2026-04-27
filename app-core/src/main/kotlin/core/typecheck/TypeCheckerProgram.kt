@@ -112,6 +112,7 @@ internal fun TypeChecker.headSymbolName(term: Term): String? {
 internal fun TypeChecker.checkDefinition(definition: Definition) {
     var declaredType = definition.type
     var implementation = definition.implementation
+    var provisionalRegistered = false
 
     traceStep("check definition '${definition.name}'")
 
@@ -162,6 +163,12 @@ internal fun TypeChecker.checkDefinition(definition: Definition) {
         traceStep("infer declared type kind")
         inferType(declaredType, emptyMap())
         checkLeadingImplicitArguments(declaredType)
+
+        if (implementation != null) {
+            globals[definition.name] = GlobalEntry(type = declaredType, implementation = null)
+            provisionalRegistered = true
+            traceStep("register provisional global '${definition.name}' for recursive checking")
+        }
     }
 
     val implementationType = implementation?.let {
@@ -196,6 +203,8 @@ internal fun TypeChecker.checkDefinition(definition: Definition) {
     if (finalType != null) {
         globals[definition.name] = GlobalEntry(type = finalType, implementation = implementation)
         traceStep("register global '${definition.name}'")
+    } else if (provisionalRegistered) {
+        globals.remove(definition.name)
     }
 }
 

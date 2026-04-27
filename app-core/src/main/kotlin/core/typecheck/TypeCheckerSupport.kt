@@ -14,6 +14,7 @@ internal fun TypeChecker.spanOf(term: Term): TextSpan? {
         is Term.Pi -> term.parameterSpan
         is Term.Typed -> spanOf(term.term) ?: spanOf(term.type)
         is Term.Application -> spanOf(term.function) ?: spanOf(term.argument)
+        is Term.Case -> term.span
     }
 }
 

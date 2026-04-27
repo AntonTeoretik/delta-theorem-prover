@@ -3,6 +3,7 @@ package core.model
 enum class TermNodeType {
     ROOT,
     APP,
+    CASE,
     TYPE,
     CONST,
     VAR,

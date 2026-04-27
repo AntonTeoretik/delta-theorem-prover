@@ -47,4 +47,22 @@ sealed interface Term {
         val argument: Term,
         val visibility: Visibility,
     ) : Term
+
+    data class Case(
+        val scrutinee: Term,
+        val branches: List<CaseBranch>,
+        val span: TextSpan,
+    ) : Term
+
+    data class CaseBranch(
+        val constructorName: String,
+        val constructorSpan: TextSpan,
+        val parameters: List<CasePatternParameter>,
+        val body: Term,
+    )
+
+    data class CasePatternParameter(
+        val name: String,
+        val span: TextSpan,
+    )
 }

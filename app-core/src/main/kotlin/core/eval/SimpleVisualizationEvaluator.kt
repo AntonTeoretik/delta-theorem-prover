@@ -411,6 +411,38 @@ private class SymbolCollector {
                 collect(term.term, boundStacks, knownConstants)
                 collect(term.type, boundStacks, knownConstants)
             }
+
+            is Term.Case -> {
+                collect(term.scrutinee, boundStacks, knownConstants)
+                term.branches.forEach { branch ->
+                    val pushed = mutableListOf<Pair<String, Int>>()
+                    branch.parameters.forEach { parameter ->
+                        val binderId = nextBinderId++
+                        val binderInfo = BinderInfo(
+                            id = binderId,
+                            declarationSpan = parameter.span,
+                            useSpans = mutableListOf(),
+                        )
+                        bindersById[binderId] = binderInfo
+                        boundVariableSpans += parameter.span
+                        val stack = boundStacks.getOrPut(parameter.name) { mutableListOf() }
+                        stack.add(binderId)
+                        pushed += parameter.name to binderId
+                    }
+
+                    collect(branch.body, boundStacks, knownConstants)
+
+                    pushed.asReversed().forEach { (name, _) ->
+                        val stack = boundStacks[name]
+                        if (!stack.isNullOrEmpty()) {
+                            stack.removeAt(stack.lastIndex)
+                            if (stack.isEmpty()) {
+                                boundStacks.remove(name)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -654,6 +686,27 @@ private class TermGraphBuilder(
                     greenOutputCount = 0,
                     sourceTerm = term,
                 ).id
+            }
+
+            is Term.Case -> {
+                val node = addNode(
+                    type = TermNodeType.CASE,
+                    label = "case",
+                    width = 56.0,
+                    height = 48.0,
+                    blueInputCount = 1,
+                    blueOutputCount = 1 + term.branches.size,
+                    greenInputCount = 0,
+                    greenOutputCount = 0,
+                    sourceTerm = term,
+                )
+                val scrutinee = addTerm(term.scrutinee, scope)
+                addBlueEdge(node.id, scrutinee, fromPort = 0, toPort = 0)
+                term.branches.forEachIndexed { index, branch ->
+                    val bodyId = addTerm(branch.body, scope)
+                    addBlueEdge(node.id, bodyId, fromPort = index + 1, toPort = 0)
+                }
+                node.id
             }
         }
     }

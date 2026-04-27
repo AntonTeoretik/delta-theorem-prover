@@ -56,6 +56,16 @@ internal fun TypeChecker.whnf(term: Term, unfolding: MutableSet<String> = linked
                 } else candidate
             }
         }
+
+        is Term.Case -> {
+            val scrutinee = whnf(term.scrutinee, unfolding)
+            val reduced = reduceCaseAtRoot(term.copy(scrutinee = scrutinee))
+            if (reduced != null) {
+                whnf(reduced, unfolding)
+            } else {
+                term.copy(scrutinee = scrutinee)
+            }
+        }
     }
 }
 
@@ -106,6 +116,16 @@ internal fun TypeChecker.normalize(term: Term, unfolding: MutableSet<String> = l
                 }
             } else {
                 applyRewriteRules(Term.Application(fn, arg, term.visibility), unfolding)
+            }
+        }
+
+        is Term.Case -> {
+            val scrutinee = normalize(term.scrutinee, unfolding)
+            val reduced = reduceCaseAtRoot(term.copy(scrutinee = scrutinee))
+            if (reduced != null) {
+                normalize(reduced, unfolding)
+            } else {
+                term.copy(scrutinee = scrutinee)
             }
         }
     }
@@ -190,7 +210,39 @@ internal fun TypeChecker.reduceOneStep(term: Term, unfolding: MutableSet<String>
             if (reducedArgument != null) return ReductionOutcome(Term.Application(term.function, reducedArgument.term, term.visibility), "in argument: ${reducedArgument.reason}")
             null
         }
+
+        is Term.Case -> {
+            val reducedScrutinee = reduceOneStep(term.scrutinee, unfolding)
+            if (reducedScrutinee != null) {
+                return ReductionOutcome(term.copy(scrutinee = reducedScrutinee.term), "in case scrutinee: ${reducedScrutinee.reason}")
+            }
+            val reduced = reduceCaseAtRoot(term)
+            if (reduced != null) {
+                return ReductionOutcome(reduced, "case")
+            }
+            null
+        }
     }
+}
+
+internal fun TypeChecker.reduceCaseAtRoot(term: Term.Case): Term? {
+    val (head, args) = decomposeApplication(term.scrutinee)
+    val headName = when (head) {
+        is Term.Variable -> head.name
+        is Term.Constant -> head.name
+        else -> null
+    } ?: return null
+
+    val branch = term.branches.firstOrNull { it.constructorName == headName } ?: return null
+    if (branch.parameters.size != args.size) {
+        return null
+    }
+
+    var result: Term = branch.body
+    branch.parameters.zip(args).forEach { (parameter, argument) ->
+        result = substitute(result, parameter.name, argument)
+    }
+    return result
 }
 
 internal fun TypeChecker.rewriteAtRoot(term: Term): RewriteOutcome? {
@@ -254,6 +306,10 @@ internal fun TypeChecker.canonicalizeRewriteTerm(term: Term): Term {
         is Term.Typed -> Term.Typed(canonicalizeRewriteTerm(term.term), canonicalizeRewriteTerm(term.type))
         is Term.Lambda -> term.copy(parameterType = canonicalizeRewriteTerm(term.parameterType), body = canonicalizeRewriteTerm(term.body))
         is Term.Pi -> term.copy(parameterType = canonicalizeRewriteTerm(term.parameterType), body = canonicalizeRewriteTerm(term.body))
+        is Term.Case -> term.copy(
+            scrutinee = canonicalizeRewriteTerm(term.scrutinee),
+            branches = term.branches.map { it.copy(body = canonicalizeRewriteTerm(it.body)) },
+        )
         is Term.Application -> {
             val rebuilt = Term.Application(canonicalizeRewriteTerm(term.function), canonicalizeRewriteTerm(term.argument), term.visibility)
             val (head, _) = decomposeApplication(rebuilt)
@@ -305,6 +361,19 @@ internal fun TypeChecker.matchRewritePattern(
                 pattern.parameter == target.parameter &&
                 matchRewritePattern(pattern.parameterType, target.parameterType, patternVariables, substitutions) &&
                 matchRewritePattern(pattern.body, target.body, patternVariables, substitutions)
+        pattern is Term.Case && target is Term.Case -> {
+            if (!matchRewritePattern(pattern.scrutinee, target.scrutinee, patternVariables, substitutions)) {
+                return false
+            }
+            if (pattern.branches.size != target.branches.size) {
+                return false
+            }
+            pattern.branches.zip(target.branches).all { (leftBranch, rightBranch) ->
+                leftBranch.constructorName == rightBranch.constructorName &&
+                    leftBranch.parameters.size == rightBranch.parameters.size &&
+                    matchRewritePattern(leftBranch.body, rightBranch.body, patternVariables, substitutions)
+            }
+        }
         else -> false
     }
 }
@@ -338,5 +407,13 @@ internal fun TypeChecker.applySimultaneousSubstitution(term: Term, substitutions
                 body = applySimultaneousSubstitution(term.body, next),
             )
         }
+
+        is Term.Case -> term.copy(
+            scrutinee = applySimultaneousSubstitution(term.scrutinee, substitutions),
+            branches = term.branches.map { branch ->
+                val branchSubstitutions = substitutions - branch.parameters.map { it.name }.toSet()
+                branch.copy(body = applySimultaneousSubstitution(branch.body, branchSubstitutions))
+            },
+        )
     }
 }
