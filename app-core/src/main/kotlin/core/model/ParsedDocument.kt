@@ -29,6 +29,21 @@ data class RewriteRule(
     val nameSpan: TextSpan,
 )
 
+data class NewtypeMember(
+    val name: String,
+    val type: Term,
+    val nameSpan: TextSpan,
+)
+
+data class NewtypeRegistry(
+    val typeName: String,
+    val typeSignature: Term,
+    val typeNameSpan: TextSpan,
+    val constructors: List<NewtypeMember>,
+    val recursor: NewtypeMember?,
+    val rules: List<RewriteRule>,
+)
+
 enum class InfixAssociativity {
     LEFT,
     RIGHT,
@@ -45,6 +60,7 @@ data class ParsedDocument(
     val sourceText: String,
     val definitions: List<Definition>,
     val rewriteRules: List<RewriteRule> = emptyList(),
+    val newtypeRegistries: List<NewtypeRegistry> = emptyList(),
     val infixDeclarations: List<InfixDeclaration> = emptyList(),
     val commentSpans: List<TextSpan> = emptyList(),
     val diagnostics: List<Diagnostic> = emptyList(),

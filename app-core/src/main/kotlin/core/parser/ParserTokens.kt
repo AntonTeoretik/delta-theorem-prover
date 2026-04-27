@@ -3,6 +3,7 @@ package core.parser
 import core.model.Definition
 import core.model.Diagnostic
 import core.model.InfixDeclaration
+import core.model.NewtypeRegistry
 import core.model.RewriteRule
 
 internal enum class TokenType {
@@ -41,6 +42,7 @@ internal data class Token(
 internal data class ParseResult(
     val definitions: List<Definition>,
     val rewriteRules: List<RewriteRule>,
+    val newtypeRegistries: List<NewtypeRegistry>,
     val infixDeclarations: List<InfixDeclaration>,
     val diagnostics: List<Diagnostic>,
 )

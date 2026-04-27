@@ -79,6 +79,8 @@ class TypeChecker(
             traceSink = null
         }
 
+        validateNewtypeRegistries()
+
         metaContext.values.forEach { entry ->
             if (entry.requiresResolution && entry.solution == null) {
                 report(entry.span, "cannot infer implicit argument")
@@ -108,6 +110,38 @@ class TypeChecker(
         }
 
         return entries.sortedBy { it.startOffset }
+    }
+
+    private fun validateNewtypeRegistries() {
+        document.newtypeRegistries.forEach { registry ->
+            registry.constructors.forEach { constructor ->
+                val finalResult = constructorResultType(constructor.type)
+                val headName = headSymbolName(finalResult)
+                if (headName != registry.typeName) {
+                    report(
+                        constructor.nameSpan,
+                        "Constructor '${constructor.name}' must return ${registry.typeName} (possibly applied), got ${pretty(finalResult)}",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun constructorResultType(type: Term): Term {
+        var current = whnf(zonk(type))
+        while (current is Term.Pi) {
+            current = whnf(zonk(current.body))
+        }
+        return current
+    }
+
+    private fun headSymbolName(term: Term): String? {
+        val (head, _) = decomposeApplication(term)
+        return when (head) {
+            is Term.Variable -> head.name
+            is Term.Constant -> head.name
+            else -> null
+        }
     }
 
     private fun maxMetaIdInDocument(): Int {

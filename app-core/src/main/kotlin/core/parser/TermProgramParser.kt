@@ -5,11 +5,15 @@ import core.model.DefinitionKind
 import core.model.Diagnostic
 import core.model.InfixAssociativity
 import core.model.InfixDeclaration
+import core.model.NewtypeMember
+import core.model.NewtypeRegistry
 import core.model.RewriteRule
 import core.model.Term
 import core.model.TextSpan
 
 internal class TermProgramParser(private val parser: TermSyntaxParser) {
+    private var nextAnonymousBinderId: Int = 0
+
     fun parseProgramOrTerm(): ParseResult {
         val diagnostics = mutableListOf<Diagnostic>()
         parseLeadingInfixDirectives(diagnostics)
@@ -18,6 +22,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             return ParseResult(
                 definitions = emptyList(),
                 rewriteRules = emptyList(),
+                newtypeRegistries = emptyList(),
                 infixDeclarations = parser.infixDeclarations.toList(),
                 diagnostics = diagnostics,
             )
@@ -40,6 +45,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             return ParseResult(
                 definitions = definitions,
                 rewriteRules = parser.rewriteRules.toList(),
+                newtypeRegistries = newtypeRegistries.toList(),
                 infixDeclarations = parser.infixDeclarations.toList(),
                 diagnostics = diagnostics,
             )
@@ -67,10 +73,13 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
                 listOf(Definition(name = "main", type = null, implementation = term, nameSpan = null, keywordSpan = null))
             },
             rewriteRules = emptyList(),
+            newtypeRegistries = emptyList(),
             infixDeclarations = parser.infixDeclarations.toList(),
             diagnostics = diagnostics + termDiagnostics,
         )
     }
+
+    private val newtypeRegistries = mutableListOf<NewtypeRegistry>()
 
     private fun shouldParseDefinitions(): Boolean {
         if (isRuleStart()) {
@@ -271,6 +280,11 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             } else {
                 firstToken
             }
+
+            if (kind == DefinitionKind.NEWTYPE && tryParseNewtypeRegistryBlock(firstToken, nameToken, diagnostics, definitions)) {
+                continue
+            }
+
             var type: Term? = null
             var implementation: Term? = null
             val telescopeBinders = mutableListOf<TelescopeBinder>()
@@ -431,6 +445,185 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         return Token(TokenType.REWRITE_ARROW, "", token.line, token.column, token.startOffset, token.endOffset)
     }
 
+    private fun tryParseNewtypeRegistryBlock(
+        keywordToken: Token,
+        typeNameToken: Token,
+        diagnostics: MutableList<Diagnostic>,
+        definitions: MutableList<Definition>,
+    ): Boolean {
+        val startCursor = parser.cursor
+        if (!parser.match(TokenType.COLON)) {
+            return false
+        }
+
+        val blockStart = findTopLevelBlockStart(parser.cursor)
+        if (blockStart == null) {
+            parser.cursor = startCursor
+            return false
+        }
+        val typeSignature = parseTypeSignatureUntil(blockStart, diagnostics)
+
+        parser.cursor = blockStart
+        parser.consume(TokenType.LBRACE, "Expected '{' to start newtype block", diagnostics)
+
+        val constructors = mutableListOf<NewtypeMember>()
+        var recursor: NewtypeMember? = null
+        val attachedRules = mutableListOf<RewriteRule>()
+
+        while (!parser.isAtEnd() && !parser.check(TokenType.RBRACE)) {
+            val token = parser.peek()
+            if (token.type == TokenType.IDENT && token.text == "constructor") {
+                val member = parseNewtypeMember(diagnostics, "constructor")
+                if (member != null) {
+                    constructors += member
+                    definitions += Definition(
+                        name = member.name,
+                        kind = DefinitionKind.AXIOM,
+                        type = member.type,
+                        implementation = null,
+                        nameSpan = member.nameSpan,
+                        keywordSpan = TextSpan(token.startOffset, token.endOffset),
+                        terminatorSpan = null,
+                    )
+                }
+                continue
+            }
+
+            if (token.type == TokenType.IDENT && token.text == "recursor") {
+                val member = parseNewtypeMember(diagnostics, "recursor")
+                if (member != null) {
+                    recursor = member
+                    definitions += Definition(
+                        name = member.name,
+                        kind = DefinitionKind.RECURSOR,
+                        type = member.type,
+                        implementation = null,
+                        nameSpan = member.nameSpan,
+                        keywordSpan = TextSpan(token.startOffset, token.endOffset),
+                        terminatorSpan = null,
+                    )
+                }
+                continue
+            }
+
+            if (token.type == TokenType.IDENT && token.text == "rule") {
+                val before = parser.rewriteRules.size
+                parseRule(diagnostics)
+                val added = parser.rewriteRules.drop(before)
+                attachedRules += added
+                continue
+            }
+
+            diagnostics += Diagnostic(
+                message = "Expected 'constructor', 'recursor', or 'rule' in newtype block",
+                line = token.line,
+                column = token.column,
+                startOffset = token.startOffset,
+                endOffset = token.endOffset,
+            )
+            parser.advance()
+        }
+
+        parser.consume(TokenType.RBRACE, "Expected '}' after newtype block", diagnostics)
+
+        val typeNameSpan = TextSpan(typeNameToken.startOffset, typeNameToken.endOffset)
+        definitions += Definition(
+            name = typeNameToken.text,
+            kind = DefinitionKind.NEWTYPE,
+            type = typeSignature,
+            implementation = null,
+            nameSpan = typeNameSpan,
+            keywordSpan = TextSpan(keywordToken.startOffset, keywordToken.endOffset),
+            terminatorSpan = null,
+        )
+
+        newtypeRegistries += NewtypeRegistry(
+            typeName = typeNameToken.text,
+            typeSignature = typeSignature,
+            typeNameSpan = typeNameSpan,
+            constructors = constructors.toList(),
+            recursor = recursor,
+            rules = attachedRules.toList(),
+        )
+
+        return true
+    }
+
+    private fun findTopLevelBlockStart(start: Int): Int? {
+        var parenDepth = 0
+        var braceDepth = 0
+        var index = start
+        while (index < parser.tokens.size) {
+            val token = parser.tokens[index]
+            when (token.type) {
+                TokenType.LPAREN -> parenDepth += 1
+                TokenType.RPAREN -> parenDepth = (parenDepth - 1).coerceAtLeast(0)
+                TokenType.LBRACE -> {
+                    if (parenDepth == 0 && braceDepth == 0 && index != start) {
+                        return index
+                    }
+                    braceDepth += 1
+                }
+
+                TokenType.RBRACE -> braceDepth = (braceDepth - 1).coerceAtLeast(0)
+                TokenType.SEMICOLON,
+                TokenType.ASSIGN,
+                -> {
+                    if (parenDepth == 0 && braceDepth == 0) {
+                        return null
+                    }
+                }
+
+                TokenType.EOF -> return null
+                else -> Unit
+            }
+            index += 1
+        }
+        return null
+    }
+
+    private fun parseTypeSignatureUntil(endExclusive: Int, diagnostics: MutableList<Diagnostic>): Term {
+        val tokenSlice = parser.tokens.subList(parser.cursor, endExclusive)
+        val eofAnchor = parser.tokens.getOrNull(endExclusive) ?: parser.tokens.last()
+        val localTokens = tokenSlice + Token(
+            type = TokenType.EOF,
+            text = "",
+            line = eofAnchor.line,
+            column = eofAnchor.column,
+            startOffset = eofAnchor.startOffset,
+            endOffset = eofAnchor.endOffset,
+        )
+
+        val localParser = TermSyntaxParser(localTokens, parser.sourceText)
+        val localDiagnostics = mutableListOf<Diagnostic>()
+        val term = localParser.parseExpression(localDiagnostics)
+        if (!localParser.isAtEnd()) {
+            val token = localParser.peek()
+            localDiagnostics += Diagnostic(
+                message = "Unexpected token '${token.text.ifEmpty { token.type.name }}' in newtype type signature",
+                line = token.line,
+                column = token.column,
+                startOffset = token.startOffset,
+                endOffset = token.endOffset,
+            )
+        }
+        diagnostics += localDiagnostics
+        return term
+    }
+
+    private fun parseNewtypeMember(diagnostics: MutableList<Diagnostic>, kind: String): NewtypeMember? {
+        parser.advance()
+        val nameToken = consumeDefinitionName(diagnostics, "Expected name after '$kind'")
+        parser.consume(TokenType.COLON, "Expected ':' after $kind name", diagnostics)
+        val memberType = parser.parseExpression(diagnostics)
+        parser.consume(TokenType.SEMICOLON, "Expected ';' after $kind declaration", diagnostics)
+        return NewtypeMember(
+            name = nameToken.text,
+            type = memberType,
+            nameSpan = TextSpan(nameToken.startOffset, nameToken.endOffset),
+        )
+    }
+
     private fun isTelescopeStart(token: Token): Boolean {
         return token.type == TokenType.LPAREN ||
             token.type == TokenType.LBRACE ||
@@ -465,7 +658,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             }
             parser.consume(TokenType.RBRACE, "Expected '}' after implicit telescope binder", diagnostics)
             return TelescopeBinder(
-                name = nameToken.text.ifBlank { "_" },
+                name = normalizeTelescopeBinderName(nameToken.text),
                 type = binderType,
                 span = TextSpan(nameToken.startOffset, nameToken.endOffset),
                 visibility = Term.Visibility.IMPLICIT,
@@ -478,7 +671,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             val binderType = parser.parseExpression(diagnostics, TermSyntaxParser.TYPE_ANNOTATION_PRECEDENCE + 1)
             parser.consume(TokenType.RPAREN, "Expected ')' after telescope binder", diagnostics)
             return TelescopeBinder(
-                name = nameToken.text.ifBlank { "_" },
+                name = normalizeTelescopeBinderName(nameToken.text),
                 type = binderType,
                 span = TextSpan(nameToken.startOffset, nameToken.endOffset),
                 visibility = Term.Visibility.EXPLICIT,
@@ -489,11 +682,20 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         parser.consume(TokenType.COLON, "Expected ':' in telescope binder", diagnostics)
         val binderType = parser.parseExpression(diagnostics, TermSyntaxParser.TYPE_ANNOTATION_PRECEDENCE + 1)
         return TelescopeBinder(
-            name = nameToken.text.ifBlank { "_" },
+            name = normalizeTelescopeBinderName(nameToken.text),
             type = binderType,
             span = TextSpan(nameToken.startOffset, nameToken.endOffset),
             visibility = Term.Visibility.EXPLICIT,
         )
+    }
+
+    private fun normalizeTelescopeBinderName(raw: String): String {
+        val value = raw.ifBlank { "_" }
+        if (value == "_") {
+            val id = nextAnonymousBinderId++
+            return "_anon$id"
+        }
+        return value
     }
 
     private data class TelescopeBinder(

@@ -5,7 +5,7 @@ import core.model.InfixDeclaration
 import core.model.Term
 import core.model.TextSpan
 
-internal class TermSyntaxParser(internal val tokens: List<Token>, private val sourceText: String) {
+internal class TermSyntaxParser(internal val tokens: List<Token>, internal val sourceText: String) {
     internal var cursor: Int = 0
     private var nextMetaId: Int = 0
 

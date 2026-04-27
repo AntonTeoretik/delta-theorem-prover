@@ -17,6 +17,7 @@ class SimpleTextParser : TextParser {
             sourceText = normalized,
             definitions = parseResult.definitions,
             rewriteRules = parseResult.rewriteRules,
+            newtypeRegistries = parseResult.newtypeRegistries,
             infixDeclarations = parseResult.infixDeclarations,
             commentSpans = lexer.commentSpans.toList(),
             diagnostics = diagnostics,
