@@ -170,14 +170,35 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         document: ParsedDocument,
         diagnostics: List<core.model.Diagnostic>,
     ): List<DefinitionStatus> {
-        return document.definitions.mapNotNull { definition ->
-            val terminator = definition.terminatorSpan ?: return@mapNotNull null
+        return document.definitions.mapIndexedNotNull { index, definition ->
+            val terminator = definition.terminatorSpan ?: return@mapIndexedNotNull null
             val line = offsetToLine(document.sourceText, terminator.startOffset)
-            val lineDiagnostics = diagnostics.filter { it.line == line }
+            val definitionStart = definition.nameSpan?.startOffset ?: terminator.startOffset
+            val nextDefinitionStart = document.definitions
+                .getOrNull(index + 1)
+                ?.nameSpan
+                ?.startOffset
+                ?: document.sourceText.length + 1
+
+            val rangeDiagnostics = diagnostics.filter { diagnostic ->
+                val startOffset = diagnostic.startOffset
+                if (startOffset != null) {
+                    startOffset >= definitionStart && startOffset < nextDefinitionStart
+                } else {
+                    val diagnosticLineOffset = lineToOffset(document.sourceText, diagnostic.line)
+                    diagnosticLineOffset >= definitionStart && diagnosticLineOffset < nextDefinitionStart
+                }
+            }
+
+            val deduplicatedMessages = rangeDiagnostics
+                .map { "[${it.line}:${it.column}] ${it.message}" }
+                .distinct()
+
             DefinitionStatus(
                 line = line,
-                isOk = lineDiagnostics.isEmpty(),
-                messages = lineDiagnostics.map { "[${it.line}:${it.column}] ${it.message}" },
+                markerOffset = terminator.endOffset,
+                isOk = deduplicatedMessages.isEmpty(),
+                messages = deduplicatedMessages,
             )
         }
     }
@@ -193,6 +214,24 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             i += 1
         }
         return line
+    }
+
+    private fun lineToOffset(source: String, line: Int): Int {
+        if (line <= 1) {
+            return 0
+        }
+        var currentLine = 1
+        var index = 0
+        while (index < source.length && currentLine < line) {
+            if (source[index] == '\n') {
+                currentLine += 1
+                if (currentLine == line) {
+                    return index + 1
+                }
+            }
+            index += 1
+        }
+        return source.length
     }
 
     private fun resolveActiveConstant(

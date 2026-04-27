@@ -51,6 +51,7 @@ data class EvaluationTrace(
 
 data class DefinitionStatus(
     val line: Int,
+    val markerOffset: Int,
     val isOk: Boolean,
     val messages: List<String>,
 )

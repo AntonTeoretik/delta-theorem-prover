@@ -2,22 +2,33 @@
   function renderDiagnosticsReport(reportOutput, statusBadge, payload, showTypecheckTrace) {
     const diagnostics = payload?.diagnostics || [];
     const trace = payload?.activeTypeCheckTrace;
+    const deduplicatedDiagnostics = [];
+    const seen = new Set();
 
-    const diagnosticsBlock = diagnostics.length === 0
+    diagnostics.forEach((diag) => {
+      const key = `${diag.line}:${diag.column}:${diag.message}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      deduplicatedDiagnostics.push(diag);
+    });
+
+    const diagnosticsBlock = deduplicatedDiagnostics.length === 0
       ? 'All checks passed.'
-      : diagnostics
+      : deduplicatedDiagnostics
         .map((diag, index) => `${index + 1}. [${diag.line}:${diag.column}] ${diag.message}`)
         .join('\n');
 
     if (statusBadge) {
-      if (diagnostics.length === 0) {
+      if (deduplicatedDiagnostics.length === 0) {
         statusBadge.textContent = '✓';
         statusBadge.className = 'report-status-badge ok';
         statusBadge.title = 'No diagnostics';
       } else {
         statusBadge.textContent = '✕';
         statusBadge.className = 'report-status-badge error';
-        statusBadge.title = `${diagnostics.length} diagnostics`; 
+        statusBadge.title = `${deduplicatedDiagnostics.length} diagnostics`;
       }
     }
 

@@ -132,7 +132,7 @@ class WebUiBridge(private val browser: CefBrowser) {
 
     private fun DefinitionStatus.toJson(): String {
         val messagesJson = messages.joinToString(",") { "\"${escapeJson(it)}\"" }
-        return """{"line":$line,"isOk":$isOk,"messages":[$messagesJson]}"""
+        return """{"line":$line,"markerOffset":$markerOffset,"isOk":$isOk,"messages":[$messagesJson]}"""
     }
 
     private fun InfixDeclaration.toJson(): String {
