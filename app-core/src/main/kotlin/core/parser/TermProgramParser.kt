@@ -672,6 +672,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
                 endOffset = typeNameToken.endOffset,
             )
         }
+        val (declaredTypeParameters, _) = peelPis(typeSignature)
 
         parser.cursor = blockStart
         parser.consume(TokenType.LBRACE, "Expected '{' to start inductive block", diagnostics)
@@ -712,8 +713,10 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             val member = NewtypeMember(constructorNameToken.text, constructorType, span)
             constructors += member
 
-            validateInductiveConstructor(typeNameToken.text, member, diagnostics)
+            validateInductiveConstructor(typeNameToken.text, declaredTypeParameters, member, diagnostics)
         }
+
+        val effectiveTypeParameters = resolveEffectiveInductiveParameters(declaredTypeParameters, constructors)
 
         val closingBrace = parser.consume(TokenType.RBRACE, "Expected '}' after inductive block", diagnostics)
 
@@ -733,14 +736,20 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             )
         }
 
-        val recursorType = generateInductiveRecursorType(typeName, constructors)
+        val recursorType = generateInductiveRecursorType(typeName, declaredTypeParameters, effectiveTypeParameters, constructors)
         val recursorMember = NewtypeMember(
             name = recursorName,
             type = recursorType,
             nameSpan = generatedRecursorSpan,
         )
 
-        val generatedRules = generateInductiveRules(typeName, constructors, generatedRecursorSpan)
+        val generatedRules = generateInductiveRules(
+            typeName,
+            declaredTypeParameters,
+            effectiveTypeParameters,
+            constructors,
+            generatedRecursorSpan,
+        )
         val existingRuleNames = parser.rewriteRules.map { it.name }.toMutableSet()
         generatedRules.forEach { rule ->
             if (!existingRuleNames.add(rule.name)) {
@@ -798,9 +807,43 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         )
     }
 
-    private fun validateInductiveConstructor(typeName: String, constructor: NewtypeMember, diagnostics: MutableList<Diagnostic>) {
+    private fun validateInductiveConstructor(
+        typeName: String,
+        typeParameters: List<InductiveArg>,
+        constructor: NewtypeMember,
+        diagnostics: MutableList<Diagnostic>,
+    ) {
         val (args, result) = peelPis(constructor.type)
-        if (!isExactlyTypeName(result, typeName)) {
+        val prefix = args.take(typeParameters.size)
+        val dataArgs = args.drop(typeParameters.size)
+        val parameterSubstitution = mutableMapOf<String, Term>()
+
+        if (prefix.size != typeParameters.size) {
+            diagnostics += Diagnostic(
+                message = "constructor parameters must match inductive parameters",
+                line = offsetToLineColumn(constructor.nameSpan.startOffset).first,
+                column = offsetToLineColumn(constructor.nameSpan.startOffset).second,
+                startOffset = constructor.nameSpan.startOffset,
+                endOffset = constructor.nameSpan.endOffset,
+            )
+            return
+        }
+
+        prefix.zip(typeParameters).forEach { (constructorParam, inductiveParam) ->
+            val rewrittenType = applySubstitution(constructorParam.type, parameterSubstitution)
+            if (!alphaEquivalent(rewrittenType, inductiveParam.type)) {
+                diagnostics += Diagnostic(
+                    message = "constructor parameters must match inductive parameters",
+                    line = offsetToLineColumn(constructorParam.span.startOffset).first,
+                    column = offsetToLineColumn(constructorParam.span.startOffset).second,
+                    startOffset = constructorParam.span.startOffset,
+                    endOffset = constructorParam.span.endOffset,
+                )
+            }
+            parameterSubstitution[constructorParam.name] = Term.Variable(inductiveParam.name, constructorParam.span)
+        }
+
+        if (!isAppliedTypeWithParameters(result, typeName, typeParameters, parameterSubstitution)) {
             diagnostics += Diagnostic(
                 message = "constructor does not return enclosing inductive type",
                 line = offsetToLineColumn(constructor.nameSpan.startOffset).first,
@@ -810,8 +853,9 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             )
         }
 
-        args.forEach { arg ->
-            if (containsTypeName(arg.type, typeName) && !isExactlyTypeName(arg.type, typeName)) {
+        dataArgs.forEach { arg ->
+            val rewritten = applySubstitution(arg.type, parameterSubstitution)
+            if (containsTypeName(rewritten, typeName) && !isAppliedTypeWithParameters(rewritten, typeName, typeParameters, emptyMap())) {
                 diagnostics += Diagnostic(
                     message = "unsupported recursive occurrence",
                     line = offsetToLineColumn(arg.span.startOffset).first,
@@ -823,9 +867,14 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         }
     }
 
-    private fun generateInductiveRecursorType(typeName: String, constructors: List<NewtypeMember>): Term {
+    private fun generateInductiveRecursorType(
+        typeName: String,
+        declaredTypeParameters: List<InductiveArg>,
+        recursorTypeParameters: List<InductiveArg>,
+        constructors: List<NewtypeMember>,
+    ): Term {
         val pSpan = constructors.firstOrNull()?.nameSpan ?: TextSpan(0, 0)
-        val typeTerm = Term.Variable(typeName, pSpan)
+        val typeTerm = applyTypeParameters(Term.Variable(typeName, pSpan), declaredTypeParameters)
         val pType = Term.Pi(
             parameter = "_",
             parameterType = typeTerm,
@@ -838,26 +887,43 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         result = Term.Pi("x", typeTerm, result, pSpan, Term.Visibility.EXPLICIT)
 
         constructors.asReversed().forEach { constructor ->
-            val caseType = generateConstructorCaseType(typeName, constructor)
+            val caseType = generateConstructorCaseType(typeName, declaredTypeParameters, constructor)
             val caseName = "case_${constructor.name}"
             result = Term.Pi(caseName, caseType, result, constructor.nameSpan, Term.Visibility.EXPLICIT)
         }
 
-        return Term.Pi("P", pType, result, pSpan, Term.Visibility.EXPLICIT)
+        result = Term.Pi("P", pType, result, pSpan, Term.Visibility.EXPLICIT)
+        recursorTypeParameters.asReversed().forEach { parameter ->
+            result = Term.Pi(parameter.name, parameter.type, result, parameter.span, parameter.visibility)
+        }
+        return result
     }
 
-    private fun generateConstructorCaseType(typeName: String, constructor: NewtypeMember): Term {
+    private fun generateConstructorCaseType(
+        typeName: String,
+        declaredTypeParameters: List<InductiveArg>,
+        constructor: NewtypeMember,
+    ): Term {
         val (args, _) = peelPis(constructor.type)
-        val ctorVar = Term.Variable(constructor.name, constructor.nameSpan)
-        val appliedCtor = args.fold(ctorVar as Term) { acc, arg ->
-            Term.Application(acc, Term.Variable(arg.name, arg.span), Term.Visibility.EXPLICIT)
+        val constructorParameters = args.take(declaredTypeParameters.size)
+        val constructorArgs = args.drop(declaredTypeParameters.size)
+        val parameterSubstitution = constructorParameters
+            .zip(declaredTypeParameters)
+            .associate { (constructorParam, inductiveParam) ->
+                constructorParam.name to Term.Variable(inductiveParam.name, inductiveParam.span)
+            }
+
+        var appliedCtor: Term = applyTypeParameters(Term.Variable(constructor.name, constructor.nameSpan), constructorParameters)
+        constructorArgs.forEach { arg ->
+            appliedCtor = Term.Application(appliedCtor, Term.Variable(arg.name, arg.span), arg.visibility)
         }
         var result: Term = Term.Application(Term.Variable("P", constructor.nameSpan), appliedCtor, Term.Visibility.EXPLICIT)
 
         val binders = mutableListOf<Pair<String, Term>>()
-        args.forEachIndexed { idx, arg ->
-            binders += arg.name to arg.type
-            if (isExactlyTypeName(arg.type, typeName)) {
+        constructorArgs.forEachIndexed { idx, arg ->
+            val argType = applySubstitution(arg.type, parameterSubstitution)
+            binders += arg.name to argType
+            if (isAppliedTypeWithParameters(argType, typeName, declaredTypeParameters, emptyMap())) {
                 val ihType = Term.Application(Term.Variable("P", arg.span), Term.Variable(arg.name, arg.span), Term.Visibility.EXPLICIT)
                 binders += "ih$idx" to ihType
             }
@@ -869,37 +935,61 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         return result
     }
 
-    private fun generateInductiveRules(typeName: String, constructors: List<NewtypeMember>, generatedSpan: TextSpan): List<RewriteRule> {
+    private fun generateInductiveRules(
+        typeName: String,
+        declaredTypeParameters: List<InductiveArg>,
+        recursorTypeParameters: List<InductiveArg>,
+        constructors: List<NewtypeMember>,
+        generatedSpan: TextSpan,
+    ): List<RewriteRule> {
         val recName = "$typeName.rec"
         val recVar = Term.Variable(recName, TextSpan(0, 0))
         val pVar = Term.Variable("P", TextSpan(0, 0))
         val caseVars = constructors.map { Term.Variable("case_${it.name}", it.nameSpan) }
+        val parameterVars = recursorTypeParameters.map { Term.Variable(it.name, it.span) }
 
         return constructors.map { constructor ->
             val (args, _) = peelPis(constructor.type)
-            val ctorCall = args.fold(Term.Variable(constructor.name, constructor.nameSpan) as Term) { acc, arg ->
-                Term.Application(acc, Term.Variable(arg.name, arg.span), Term.Visibility.EXPLICIT)
+            val constructorParameters = args.take(declaredTypeParameters.size)
+            val constructorArgs = args.drop(declaredTypeParameters.size)
+            val parameterSubstitution = constructorParameters
+                .zip(declaredTypeParameters)
+                .associate { (constructorParam, inductiveParam) ->
+                    constructorParam.name to Term.Variable(inductiveParam.name, inductiveParam.span)
+                }
+            var ctorCall: Term = applyTypeParameters(Term.Variable(constructor.name, constructor.nameSpan), constructorParameters)
+            constructorArgs.forEach { arg ->
+                ctorCall = Term.Application(ctorCall, Term.Variable(arg.name, arg.span), arg.visibility)
             }
 
             val lhsArgs = mutableListOf<Term>()
+            lhsArgs += parameterVars
             lhsArgs += pVar
             lhsArgs += caseVars
             lhsArgs += ctorCall
-            val lhs = lhsArgs.fold(recVar as Term) { acc, arg ->
-                Term.Application(acc, arg, Term.Visibility.EXPLICIT)
+            val lhsVisibility = mutableListOf<Term.Visibility>()
+            lhsVisibility += recursorTypeParameters.map { it.visibility }
+            lhsVisibility += List(1 + caseVars.size + 1) { Term.Visibility.EXPLICIT }
+            val lhs = lhsArgs.zip(lhsVisibility).fold(recVar as Term) { acc, (arg, visibility) ->
+                Term.Application(acc, arg, visibility)
             }
 
             val caseCallArgs = mutableListOf<Term>()
-            args.forEach { arg ->
+            constructorArgs.forEach { arg ->
                 val argVar = Term.Variable(arg.name, arg.span)
                 caseCallArgs += argVar
-                if (isExactlyTypeName(arg.type, typeName)) {
+                val argType = applySubstitution(arg.type, parameterSubstitution)
+                if (isAppliedTypeWithParameters(argType, typeName, declaredTypeParameters, emptyMap())) {
                     val ihArgs = mutableListOf<Term>()
+                    ihArgs += parameterVars
                     ihArgs += pVar
                     ihArgs += caseVars
                     ihArgs += argVar
-                    val ih = ihArgs.fold(recVar as Term) { acc, value ->
-                        Term.Application(acc, value, Term.Visibility.EXPLICIT)
+                    val ihVisibility = mutableListOf<Term.Visibility>()
+                    ihVisibility += recursorTypeParameters.map { it.visibility }
+                    ihVisibility += List(1 + caseVars.size + 1) { Term.Visibility.EXPLICIT }
+                    val ih = ihArgs.zip(ihVisibility).fold(recVar as Term) { acc, (value, visibility) ->
+                        Term.Application(acc, value, visibility)
                     }
                     caseCallArgs += ih
                 }
@@ -927,7 +1017,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         while (current is Term.Pi) {
             val raw = current.parameter
             val generated = if (raw.isBlank() || raw == "_" || raw.startsWith("_anon")) "arg$index" else raw
-            args += InductiveArg(generated, current.parameterType, current.parameterSpan)
+            args += InductiveArg(generated, current.parameterType, current.parameterSpan, current.visibility)
             current = current.body
             index += 1
         }
@@ -941,6 +1031,155 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             else -> false
         }
     }
+
+    private fun applyTypeParameters(base: Term, parameters: List<InductiveArg>): Term {
+        return parameters.fold(base as Term) { acc, parameter ->
+            Term.Application(acc, Term.Variable(parameter.name, parameter.span), parameter.visibility)
+        }
+    }
+
+    private fun resolveEffectiveInductiveParameters(
+        declaredTypeParameters: List<InductiveArg>,
+        constructors: List<NewtypeMember>,
+    ): List<InductiveArg> {
+        if (declaredTypeParameters.isEmpty() || constructors.isEmpty()) {
+            return declaredTypeParameters
+        }
+
+        val constructorArgLists = constructors.map { peelPis(it.type).first }
+        return declaredTypeParameters.mapIndexed { index, declared ->
+            val visibilities = constructorArgLists
+                .mapNotNull { args -> args.getOrNull(index)?.visibility }
+            val effectiveVisibility = if (visibilities.size == constructors.size && visibilities.distinct().size == 1) {
+                visibilities.first()
+            } else {
+                declared.visibility
+            }
+            declared.copy(visibility = effectiveVisibility)
+        }
+    }
+
+    private fun isAppliedTypeWithParameters(
+        term: Term,
+        typeName: String,
+        typeParameters: List<InductiveArg>,
+        substitution: Map<String, Term>,
+    ): Boolean {
+        val rewritten = applySubstitution(term, substitution)
+        val (head, args) = decomposeApplication(rewritten)
+        val headName = when (head) {
+            is Term.Variable -> head.name
+            is Term.Constant -> head.name
+            else -> null
+        }
+        if (headName != typeName || args.size != typeParameters.size) {
+            return false
+        }
+        return args.zip(typeParameters).all { (arg, parameter) ->
+            alphaEquivalent(arg.term, Term.Variable(parameter.name, parameter.span))
+        }
+    }
+
+    private fun decomposeApplication(term: Term): Pair<Term, List<AppliedArgument>> {
+        val arguments = mutableListOf<AppliedArgument>()
+        var current = term
+        while (current is Term.Application) {
+            arguments += AppliedArgument(current.argument, current.visibility)
+            current = current.function
+        }
+        arguments.reverse()
+        return current to arguments
+    }
+
+    private fun applySubstitution(term: Term, substitutions: Map<String, Term>): Term {
+        return when (term) {
+            is Term.Meta,
+            is Term.Constant,
+            -> term
+
+            is Term.Variable -> substitutions[term.name] ?: term
+            is Term.Typed -> Term.Typed(
+                term = applySubstitution(term.term, substitutions),
+                type = applySubstitution(term.type, substitutions),
+            )
+
+            is Term.Application -> Term.Application(
+                function = applySubstitution(term.function, substitutions),
+                argument = applySubstitution(term.argument, substitutions),
+                visibility = term.visibility,
+            )
+
+            is Term.Lambda -> {
+                val next = substitutions - term.parameter
+                term.copy(
+                    parameterType = applySubstitution(term.parameterType, substitutions),
+                    body = applySubstitution(term.body, next),
+                )
+            }
+
+            is Term.Pi -> {
+                val next = substitutions - term.parameter
+                term.copy(
+                    parameterType = applySubstitution(term.parameterType, substitutions),
+                    body = applySubstitution(term.body, next),
+                )
+            }
+
+            is Term.Case -> term.copy(
+                scrutinee = applySubstitution(term.scrutinee, substitutions),
+                branches = term.branches.map { branch ->
+                    val next = substitutions - branch.parameters.map { it.name }.toSet()
+                    branch.copy(body = applySubstitution(branch.body, next))
+                },
+            )
+        }
+    }
+
+    private fun alphaEquivalent(a: Term, b: Term, env: Map<String, String> = emptyMap()): Boolean {
+        return when {
+            a is Term.Meta && b is Term.Meta -> a.id == b.id
+            a is Term.Constant && b is Term.Constant -> a.name == b.name
+            a is Term.Variable && b is Term.Variable -> env[a.name]?.let { it == b.name } ?: (a.name == b.name)
+            a is Term.Typed && b is Term.Typed ->
+                alphaEquivalent(a.term, b.term, env) && alphaEquivalent(a.type, b.type, env)
+
+            a is Term.Application && b is Term.Application ->
+                a.visibility == b.visibility &&
+                    alphaEquivalent(a.function, b.function, env) &&
+                    alphaEquivalent(a.argument, b.argument, env)
+
+            a is Term.Lambda && b is Term.Lambda ->
+                a.visibility == b.visibility &&
+                    alphaEquivalent(a.parameterType, b.parameterType, env) &&
+                    alphaEquivalent(a.body, b.body, env + (a.parameter to b.parameter))
+
+            a is Term.Pi && b is Term.Pi ->
+                a.visibility == b.visibility &&
+                    alphaEquivalent(a.parameterType, b.parameterType, env) &&
+                    alphaEquivalent(a.body, b.body, env + (a.parameter to b.parameter))
+
+            a is Term.Case && b is Term.Case ->
+                alphaEquivalent(a.scrutinee, b.scrutinee, env) &&
+                    a.branches.size == b.branches.size &&
+                    a.branches.zip(b.branches).all { (left, right) ->
+                        left.constructorName == right.constructorName &&
+                            left.parameters.size == right.parameters.size &&
+                            alphaEquivalent(
+                                left.body,
+                                right.body,
+                                left.parameters.zip(right.parameters)
+                                    .fold(env) { acc, (l, r) -> acc + (l.name to r.name) },
+                            )
+                    }
+
+            else -> false
+        }
+    }
+
+    private data class AppliedArgument(
+        val term: Term,
+        val visibility: Term.Visibility,
+    )
 
     private fun containsTypeName(term: Term, typeName: String): Boolean {
         return when (term) {
@@ -988,6 +1227,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         val name: String,
         val type: Term,
         val span: TextSpan,
+        val visibility: Term.Visibility,
     )
 
     private fun isTelescopeStart(token: Token): Boolean {

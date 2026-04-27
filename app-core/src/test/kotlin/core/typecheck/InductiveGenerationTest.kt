@@ -98,4 +98,78 @@ class InductiveGenerationTest {
         val diagnostics = TypeChecker(parsed).checkProgram().diagnostics
         assertTrue(diagnostics.isEmpty(), "Expected no diagnostics, got: $diagnostics")
     }
+
+    @Test
+    fun supportsParameterizedNonIndexedInductiveExists() {
+        val source = """
+            inductive ∃ : {A : Type} → (B : A → Type) → Type {
+              make : {A : Type} → {B : A → Type} → (a : A) → (b : B(a)) → ∃{A}(B);
+            }
+
+            def fst {A : Type}, {B : A → Type}, p : ∃{A}(B) : A :=
+              ∃.rec{A}{B}(
+                λ(_ : ∃{A}(B)) => A,
+                λ(a : A) => λ(b : B(a)) => a,
+                p
+              );
+
+            def snd {A : Type}, {B : A → Type}, p : ∃{A}(B) : B(fst(p)) :=
+              ∃.rec{A}{B}(
+                λ(p : ∃{A}(B)) => B(fst(p)),
+                λ(a : A) => λ(b : B(a)) => b,
+                p
+              );
+        """.trimIndent()
+
+        val parsed = SimpleTextParser().parse(source)
+        assertTrue(parsed.diagnostics.isEmpty(), "Parser diagnostics: ${parsed.diagnostics}")
+        val registry = parsed.newtypeRegistries.firstOrNull { it.typeName == "∃" }
+        assertTrue(registry != null, "Expected generated registry for ∃")
+        assertEquals("∃.rec", registry!!.recursor?.name)
+        assertEquals(listOf("∃.rec.make"), registry.rules.map { it.name })
+
+        val diagnostics = TypeChecker(parsed).checkProgram().diagnostics
+        assertTrue(diagnostics.isEmpty(), "Expected no diagnostics, got: $diagnostics")
+    }
+
+    @Test
+    fun rejectsConstructorReturningDifferentParameters() {
+        val source = """
+            inductive Bad : {A : Type} → (B : A → Type) → Type {
+              bad : {A : Type} → {B : A → Type} → (a : A) → Bad{A}(λ(_ : A) => A);
+            }
+        """.trimIndent()
+
+        val parsed = SimpleTextParser().parse(source)
+        assertTrue(
+            parsed.diagnostics.any { it.message.contains("constructor does not return enclosing inductive type") },
+            "Diagnostics: ${parsed.diagnostics}",
+        )
+    }
+
+    @Test
+    fun supportsExistsWithPartiallyImplicitUsageStyle() {
+        val source = """
+            inductive ∃ : {A : Type} → (B : A → Type) → Type {
+              make : {A : Type} → {B : A → Type} → (a : A) → (b : B(a)) → ∃{A}(B);
+            }
+
+            def fst {A : Type}, {B : A → Type}, p : ∃(B) : A :=
+              ∃.rec(
+                λ(_ : ∃{A}(B)) => A,
+                λ(a : A) => λ(b : B(a)) => a,
+                p
+              );
+
+            def snd {A : Type}, {B : A → Type}, p : ∃{A}(B) : B(fst(p)) :=
+              ∃.rec{A}{B}(
+                λ(p : ∃{A}(B)) => B(fst(p)),
+                λ(a : A) => λ(b : B(a)) => b,
+                p
+              );
+        """.trimIndent()
+
+        val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
+        assertTrue(diagnostics.isEmpty(), "Expected no diagnostics, got: $diagnostics")
+    }
 }

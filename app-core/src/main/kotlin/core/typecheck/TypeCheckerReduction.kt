@@ -336,7 +336,11 @@ internal fun TypeChecker.matchRewritePattern(
                 substitutions[pattern.name] = target
                 true
             } else {
-                alphaEquivalent(normalize(existing), normalize(target))
+                if (isRewritePlaceholderMeta(existing) || isRewritePlaceholderMeta(target)) {
+                    true
+                } else {
+                    alphaEquivalent(normalize(existing), normalize(target))
+                }
             }
         }
         pattern is Term.Variable && target is Term.Variable -> pattern.name == target.name
@@ -376,6 +380,10 @@ internal fun TypeChecker.matchRewritePattern(
         }
         else -> false
     }
+}
+
+internal fun TypeChecker.isRewritePlaceholderMeta(term: Term): Boolean {
+    return term is Term.Meta && term.id < 0
 }
 
 internal fun TypeChecker.instantiateRuleRhs(rhs: Term, substitutions: Map<String, Term>): Term {
