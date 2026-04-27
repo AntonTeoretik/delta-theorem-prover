@@ -1,6 +1,7 @@
 package core.parser
 
 import core.model.Term
+import core.model.DefinitionKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -17,6 +18,7 @@ class TelescopeParserTest {
         assertTrue(document.diagnostics.isEmpty(), "Unexpected diagnostics: ${document.diagnostics}")
 
         val definition = document.definitions.first { it.name == "f" }
+        assertEquals(DefinitionKind.LEGACY, definition.kind)
         val type = definition.type as Term.Pi
         assertEquals("a", type.parameter)
         assertEquals(Term.Visibility.EXPLICIT, type.visibility)
@@ -40,6 +42,7 @@ class TelescopeParserTest {
         assertTrue(document.diagnostics.isEmpty(), "Unexpected diagnostics: ${document.diagnostics}")
 
         val definition = document.definitions.first { it.name == "id" }
+        assertEquals(DefinitionKind.LEGACY, definition.kind)
         val typeA = definition.type as Term.Pi
         assertEquals("A", typeA.parameter)
         assertEquals(Term.Visibility.IMPLICIT, typeA.visibility)
@@ -68,6 +71,7 @@ class TelescopeParserTest {
         assertTrue(document.diagnostics.isEmpty(), "Unexpected diagnostics: ${document.diagnostics}")
 
         val definition = document.definitions.first { it.name == "h" }
+        assertEquals(DefinitionKind.LEGACY, definition.kind)
         val piA = definition.type as Term.Pi
         val piB = piA.body as Term.Pi
         val piF = piB.body as Term.Pi
@@ -91,5 +95,17 @@ class TelescopeParserTest {
         assertEquals(Term.Visibility.EXPLICIT, lambdaF.visibility)
         assertEquals(Term.Visibility.EXPLICIT, lambdaX.visibility)
         assertEquals(Term.Visibility.EXPLICIT, lambdaY.visibility)
+    }
+
+    @Test
+    fun parsesKeywordedDefinitionKind() {
+        val source = """
+            def f (a : Type) : Type := a;
+        """.trimIndent()
+
+        val document = SimpleTextParser().parse(source)
+        assertTrue(document.diagnostics.isEmpty(), "Unexpected diagnostics: ${document.diagnostics}")
+        val definition = document.definitions.single()
+        assertEquals(DefinitionKind.DEF, definition.kind)
     }
 }

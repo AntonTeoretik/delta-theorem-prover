@@ -7,6 +7,9 @@ data class TextSpan(
 
 enum class TextHighlightKind {
     DEFINITION_NAME,
+    NEWTYPE_KEYWORD,
+    AXIOM_RECURSOR_KEYWORD,
+    DECLARATIVE_KEYWORD,
     RULE_KEYWORD,
     RULE_NAME,
     COMMENT,

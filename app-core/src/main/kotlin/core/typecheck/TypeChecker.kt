@@ -1,6 +1,7 @@
 package core.typecheck
 
 import core.model.Definition
+import core.model.DefinitionKind
 import core.model.Diagnostic
 import core.model.EvaluationStep
 import core.model.EvaluationTrace
@@ -137,8 +138,8 @@ class TypeChecker(
     }
 
     private fun checkDefinition(definition: Definition) {
-        val declaredType = definition.type
-        val implementation = definition.implementation
+        var declaredType = definition.type
+        var implementation = definition.implementation
 
         traceStep("check definition '${definition.name}'")
 
@@ -146,6 +147,43 @@ class TypeChecker(
             report(definition.nameSpan, "Definition '${definition.name}' must have type or implementation")
             traceStep("error: missing both type and implementation")
             return
+        }
+
+        when (definition.kind) {
+            DefinitionKind.AXIOM,
+            DefinitionKind.RECURSOR,
+            -> {
+                if (implementation != null) {
+                    report(definition.nameSpan, "${definition.kind.name.lowercase()} '${definition.name}' must not have body")
+                    implementation = null
+                }
+            }
+
+            DefinitionKind.NEWTYPE -> {
+                if (implementation != null) {
+                    report(definition.nameSpan, "newtype '${definition.name}' must not have body")
+                    implementation = null
+                }
+                if (declaredType == null) {
+                    declaredType = typeUniverseTerm()
+                }
+                val newtypeType = declaredType ?: typeUniverseTerm()
+                if (!newtypeTargetsType(newtypeType)) {
+                    report(definition.nameSpan, "newtype '${definition.name}' must target Type")
+                }
+            }
+
+            DefinitionKind.DEF,
+            DefinitionKind.FUN,
+            DefinitionKind.LEMMA,
+            DefinitionKind.THEOREM,
+            -> {
+                if (implementation == null) {
+                    report(definition.nameSpan, "${definition.kind.name.lowercase()} '${definition.name}' must have body")
+                }
+            }
+
+            DefinitionKind.LEGACY -> Unit
         }
 
         if (declaredType != null) {
@@ -296,6 +334,14 @@ class TypeChecker(
             }
             current = whnf(current.body)
         }
+    }
+
+    private fun newtypeTargetsType(type: Term): Boolean {
+        var current = whnf(zonk(type))
+        while (current is Term.Pi) {
+            current = whnf(zonk(current.body))
+        }
+        return convertible(current, typeUniverseTerm())
     }
 
     private fun checkRulePatternAgainstExpectedType(

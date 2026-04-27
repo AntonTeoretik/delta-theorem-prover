@@ -1,11 +1,24 @@
 package core.model
 
+enum class DefinitionKind {
+    LEGACY,
+    DEF,
+    FUN,
+    LEMMA,
+    THEOREM,
+    AXIOM,
+    RECURSOR,
+    NEWTYPE,
+}
+
 data class Definition(
     val name: String,
     val type: Term?,
     val implementation: Term?,
     val nameSpan: TextSpan?,
+    val keywordSpan: TextSpan? = null,
     val terminatorSpan: TextSpan? = null,
+    val kind: DefinitionKind = DefinitionKind.LEGACY,
 )
 
 data class RewriteRule(

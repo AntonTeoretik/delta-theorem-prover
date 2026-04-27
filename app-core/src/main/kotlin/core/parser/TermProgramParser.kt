@@ -1,6 +1,7 @@
 package core.parser
 
 import core.model.Definition
+import core.model.DefinitionKind
 import core.model.Diagnostic
 import core.model.InfixAssociativity
 import core.model.InfixDeclaration
@@ -63,7 +64,7 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             definitions = if (termDiagnostics.any()) {
                 emptyList()
             } else {
-                listOf(Definition(name = "main", type = null, implementation = term, nameSpan = null))
+                listOf(Definition(name = "main", type = null, implementation = term, nameSpan = null, keywordSpan = null))
             },
             rewriteRules = emptyList(),
             infixDeclarations = parser.infixDeclarations.toList(),
@@ -77,6 +78,11 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         }
         if (!isDefinitionStart()) {
             return false
+        }
+        if (definitionKeywordOf(parser.peek()) != null) {
+            return parser.tokens
+                .subList((parser.cursor + 1).coerceAtMost(parser.tokens.size), parser.tokens.size)
+                .any { it.type == TokenType.ASSIGN || it.type == TokenType.SEMICOLON }
         }
         return when (parser.peek(1).type) {
             TokenType.ASSIGN, TokenType.SEMICOLON -> true
@@ -163,7 +169,38 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         return Token(TokenType.IDENT, "", token.line, token.column, token.startOffset, token.endOffset)
     }
 
+    private fun consumeDefinitionName(diagnostics: MutableList<Diagnostic>, message: String): Token {
+        if (isDefinitionNameToken(parser.peek())) {
+            return parser.advance()
+        }
+        val token = parser.peek()
+        diagnostics.add(
+            Diagnostic(
+                message = message,
+                line = token.line,
+                column = token.column,
+                startOffset = token.startOffset,
+                endOffset = token.endOffset,
+            ),
+        )
+        return Token(TokenType.IDENT, "", token.line, token.column, token.startOffset, token.endOffset)
+    }
+
     private fun isDefinitionStart(): Boolean {
+        val keyword = definitionKeywordOf(parser.peek())
+        if (keyword != null) {
+            if (!isDefinitionNameToken(parser.peek(1))) {
+                return false
+            }
+            val nextAfterName = parser.peek(2).type
+            return nextAfterName == TokenType.COLON ||
+                nextAfterName == TokenType.ASSIGN ||
+                nextAfterName == TokenType.SEMICOLON ||
+                nextAfterName == TokenType.LPAREN ||
+                nextAfterName == TokenType.LBRACE ||
+                (nextAfterName == TokenType.IDENT && parser.peek(3).type == TokenType.COLON)
+        }
+
         if (!isDefinitionNameToken(parser.peek())) {
             return false
         }
@@ -181,6 +218,22 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             token.type == TokenType.CONST_IDENT ||
             token.type == TokenType.BACKSLASH_CONST ||
             token.type == TokenType.SYMBOLIC_IDENT
+    }
+
+    private fun definitionKeywordOf(token: Token): DefinitionKind? {
+        if (token.type != TokenType.IDENT) {
+            return null
+        }
+        return when (token.text) {
+            "def" -> DefinitionKind.DEF
+            "fun" -> DefinitionKind.FUN
+            "lemma" -> DefinitionKind.LEMMA
+            "theorem" -> DefinitionKind.THEOREM
+            "axiom" -> DefinitionKind.AXIOM
+            "recursor" -> DefinitionKind.RECURSOR
+            "newtype" -> DefinitionKind.NEWTYPE
+            else -> null
+        }
     }
 
     private fun parseDefinitions(diagnostics: MutableList<Diagnostic>): MutableList<Definition> {
@@ -209,7 +262,15 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
                 break
             }
 
-            val nameToken = parser.advance()
+            val firstToken = parser.advance()
+            val keywordKind = definitionKeywordOf(firstToken)
+            val kind = keywordKind ?: DefinitionKind.LEGACY
+            val keywordSpan = if (keywordKind != null) TextSpan(firstToken.startOffset, firstToken.endOffset) else null
+            val nameToken = if (keywordKind != null) {
+                consumeDefinitionName(diagnostics, "Expected name after '${firstToken.text}'")
+            } else {
+                firstToken
+            }
             var type: Term? = null
             var implementation: Term? = null
             val telescopeBinders = mutableListOf<TelescopeBinder>()
@@ -218,12 +279,22 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
                 type = parser.parseExpression(diagnostics)
             } else if (isTelescopeStart(parser.peek())) {
                 telescopeBinders += parseTelescopeBinders(diagnostics)
-                parser.consume(TokenType.COLON, "Expected ':' before telescope result type", diagnostics)
-                type = parser.parseExpression(diagnostics)
+                if (parser.match(TokenType.COLON)) {
+                    type = parser.parseExpression(diagnostics)
+                } else if (kind == DefinitionKind.NEWTYPE) {
+                    type = Term.Variable("Type", TextSpan(nameToken.startOffset, nameToken.endOffset))
+                } else {
+                    parser.consume(TokenType.COLON, "Expected ':' before telescope result type", diagnostics)
+                    type = parser.parseExpression(diagnostics)
+                }
             }
 
             if (parser.match(TokenType.ASSIGN)) {
                 implementation = parser.parseExpression(diagnostics)
+            }
+
+            if (kind == DefinitionKind.NEWTYPE && type == null) {
+                type = Term.Variable("Type", TextSpan(nameToken.startOffset, nameToken.endOffset))
             }
 
             val desugaredType = if (telescopeBinders.isEmpty() || type == null) {
@@ -264,9 +335,11 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             definitions.add(
                 Definition(
                     name = nameToken.text,
+                    kind = kind,
                     type = desugaredType,
                     implementation = desugaredImplementation,
                     nameSpan = TextSpan(nameToken.startOffset, nameToken.endOffset),
+                    keywordSpan = keywordSpan,
                     terminatorSpan = terminatorSpan,
                 ),
             )

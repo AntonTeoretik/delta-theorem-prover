@@ -155,13 +155,28 @@ body {
   font-weight: 700;
 }
 
+.hl-keyword-newtype {
+  color: rgba(174, 130, 238, 0.97);
+  font-weight: 800;
+}
+
+.hl-keyword-axiom {
+  color: rgba(162, 118, 226, 0.95);
+  font-weight: 650;
+}
+
+.hl-keyword-decl {
+  color: rgba(144, 168, 205, 0.9);
+  font-weight: 600;
+}
+
 .hl-rule-keyword {
-  color: rgba(212, 145, 90, 0.96);
+  color: rgba(186, 134, 244, 0.95);
   font-weight: 700;
 }
 
 .hl-rule-name {
-  color: rgba(191, 123, 70, 0.96);
+  color: rgba(156, 106, 222, 0.92);
   font-weight: 700;
 }
 

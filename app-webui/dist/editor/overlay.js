@@ -77,6 +77,9 @@
 
   function highlightClassFor(kind) {
     if (kind === 'DEFINITION_NAME') return 'hl-definition-name';
+    if (kind === 'NEWTYPE_KEYWORD') return 'hl-keyword-newtype';
+    if (kind === 'AXIOM_RECURSOR_KEYWORD') return 'hl-keyword-axiom';
+    if (kind === 'DECLARATIVE_KEYWORD') return 'hl-keyword-decl';
     if (kind === 'RULE_KEYWORD') return 'hl-rule-keyword';
     if (kind === 'RULE_NAME') return 'hl-rule-name';
     if (kind === 'COMMENT') return 'hl-comment';

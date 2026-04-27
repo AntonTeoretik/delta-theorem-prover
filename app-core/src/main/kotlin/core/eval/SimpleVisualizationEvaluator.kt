@@ -2,6 +2,7 @@ package core.eval
 
 import core.model.ParsedDocument
 import core.model.DefinitionStatus
+import core.model.DefinitionKind
 import core.model.SymbolDisplay
 import core.model.Term
 import core.model.TermEdge
@@ -122,6 +123,25 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         document.definitions.forEach { definition ->
             definition.nameSpan?.let { span ->
                 highlights += TextHighlight(span, TextHighlightKind.DEFINITION_NAME)
+            }
+            definition.keywordSpan?.let { span ->
+                val kind = when (definition.kind) {
+                    DefinitionKind.NEWTYPE -> TextHighlightKind.NEWTYPE_KEYWORD
+                    DefinitionKind.AXIOM,
+                    DefinitionKind.RECURSOR,
+                    -> TextHighlightKind.AXIOM_RECURSOR_KEYWORD
+
+                    DefinitionKind.DEF,
+                    DefinitionKind.FUN,
+                    DefinitionKind.LEMMA,
+                    DefinitionKind.THEOREM,
+                    -> TextHighlightKind.DECLARATIVE_KEYWORD
+
+                    DefinitionKind.LEGACY -> null
+                }
+                if (kind != null) {
+                    highlights += TextHighlight(span, kind)
+                }
             }
         }
         document.rewriteRules.forEach { rule ->
