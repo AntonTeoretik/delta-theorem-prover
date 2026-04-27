@@ -280,21 +280,10 @@ internal class TermExpressionParser(private val parser: TermSyntaxParser) {
     }
 
     private fun parseAtom(diagnostics: MutableList<Diagnostic>): Term {
-        if (parser.match(TokenType.IDENT)) {
-            val token = parser.previous()
-            return Term.Variable(token.text, TextSpan(token.startOffset, token.endOffset))
-        }
-        if (parser.match(TokenType.CONST_IDENT)) {
-            val token = parser.previous()
-            return Term.Variable(token.text, TextSpan(token.startOffset, token.endOffset))
-        }
-        if (parser.match(TokenType.BACKSLASH_CONST)) {
-            val token = parser.previous()
-            return Term.Variable(token.text, TextSpan(token.startOffset, token.endOffset))
-        }
-        if (parser.match(TokenType.SYMBOLIC_IDENT)) {
-            val token = parser.previous()
-            return Term.Variable(token.text, TextSpan(token.startOffset, token.endOffset))
+        val firstNameToken = consumeNameSegmentToken() 
+        if (firstNameToken != null) {
+            val (name, endOffset) = parseQualifiedName(firstNameToken)
+            return Term.Variable(name, TextSpan(firstNameToken.startOffset, endOffset))
         }
         if (parser.match(TokenType.LPAREN)) {
             val term = parseExpression(diagnostics)
@@ -321,6 +310,35 @@ internal class TermExpressionParser(private val parser: TermSyntaxParser) {
             parser.advance()
         }
         return Term.Variable("_", TextSpan(token.startOffset, token.endOffset))
+    }
+
+    private fun consumeNameSegmentToken(): Token? {
+        val type = parser.peek().type
+        if (type == TokenType.IDENT || type == TokenType.CONST_IDENT || type == TokenType.BACKSLASH_CONST || type == TokenType.SYMBOLIC_IDENT) {
+            parser.advance()
+            return parser.previous()
+        }
+        return null
+    }
+
+    private fun parseQualifiedName(first: Token): Pair<String, Int> {
+        val builder = StringBuilder(first.text)
+        var endOffset = first.endOffset
+        while (parser.check(TokenType.DOT) && isNameSegmentToken(parser.peek(1))) {
+            parser.advance()
+            val segment = parser.advance()
+            builder.append('.')
+            builder.append(segment.text)
+            endOffset = segment.endOffset
+        }
+        return builder.toString() to endOffset
+    }
+
+    private fun isNameSegmentToken(token: Token): Boolean {
+        return token.type == TokenType.IDENT ||
+            token.type == TokenType.CONST_IDENT ||
+            token.type == TokenType.BACKSLASH_CONST ||
+            token.type == TokenType.SYMBOLIC_IDENT
     }
 
     private fun peekInfixCandidate(): InfixCandidate? {

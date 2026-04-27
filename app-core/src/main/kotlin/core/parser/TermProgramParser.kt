@@ -88,6 +88,11 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         if (!isDefinitionStart()) {
             return false
         }
+        if (isInductiveKeyword(parser.peek())) {
+            return parser.tokens
+                .subList((parser.cursor + 1).coerceAtMost(parser.tokens.size), parser.tokens.size)
+                .any { it.type == TokenType.LBRACE }
+        }
         if (definitionKeywordOf(parser.peek()) != null) {
             return parser.tokens
                 .subList((parser.cursor + 1).coerceAtMost(parser.tokens.size), parser.tokens.size)
@@ -196,6 +201,10 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
     }
 
     private fun isDefinitionStart(): Boolean {
+        if (isInductiveKeyword(parser.peek())) {
+            return isDefinitionNameToken(parser.peek(1)) && parser.peek(2).type == TokenType.COLON
+        }
+
         val keyword = definitionKeywordOf(parser.peek())
         if (keyword != null) {
             if (!isDefinitionNameToken(parser.peek(1))) {
@@ -245,6 +254,10 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
         }
     }
 
+    private fun isInductiveKeyword(token: Token): Boolean {
+        return token.type == TokenType.IDENT && token.text == "inductive"
+    }
+
     private fun parseDefinitions(diagnostics: MutableList<Diagnostic>): MutableList<Definition> {
         val definitions = mutableListOf<Definition>()
 
@@ -272,6 +285,11 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             }
 
             val firstToken = parser.advance()
+            if (isInductiveKeyword(firstToken)) {
+                parseInductiveBlock(firstToken, diagnostics, definitions)
+                continue
+            }
+
             val keywordKind = definitionKeywordOf(firstToken)
             val kind = keywordKind ?: DefinitionKind.LEGACY
             val keywordSpan = if (keywordKind != null) TextSpan(firstToken.startOffset, firstToken.endOffset) else null
@@ -623,6 +641,353 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
             nameSpan = TextSpan(nameToken.startOffset, nameToken.endOffset),
         )
     }
+
+    private fun parseInductiveBlock(
+        keywordToken: Token,
+        diagnostics: MutableList<Diagnostic>,
+        definitions: MutableList<Definition>,
+    ) {
+        val typeNameToken = consumeDefinitionName(diagnostics, "Expected type name after 'inductive'")
+        parser.consume(TokenType.COLON, "Expected ':' after inductive type name", diagnostics)
+
+        val blockStart = findTopLevelBlockStart(parser.cursor)
+        if (blockStart == null) {
+            diagnostics += Diagnostic(
+                message = "Expected '{' to start inductive block",
+                line = parser.peek().line,
+                column = parser.peek().column,
+                startOffset = parser.peek().startOffset,
+                endOffset = parser.peek().endOffset,
+            )
+            return
+        }
+
+        val typeSignature = parseTypeSignatureUntil(blockStart, diagnostics)
+        if (!targetsType(typeSignature)) {
+            diagnostics += Diagnostic(
+                message = "inductive result is not Type",
+                line = typeNameToken.line,
+                column = typeNameToken.column,
+                startOffset = typeNameToken.startOffset,
+                endOffset = typeNameToken.endOffset,
+            )
+        }
+
+        parser.cursor = blockStart
+        parser.consume(TokenType.LBRACE, "Expected '{' to start inductive block", diagnostics)
+
+        val constructors = mutableListOf<NewtypeMember>()
+        val constructorNameSet = linkedSetOf<String>()
+
+        while (!parser.isAtEnd() && !parser.check(TokenType.RBRACE)) {
+            if (!isDefinitionNameToken(parser.peek())) {
+                val token = parser.peek()
+                diagnostics += Diagnostic(
+                    message = "Expected constructor declaration 'name : type;'",
+                    line = token.line,
+                    column = token.column,
+                    startOffset = token.startOffset,
+                    endOffset = token.endOffset,
+                )
+                parser.advance()
+                continue
+            }
+
+            val constructorNameToken = parser.advance()
+            parser.consume(TokenType.COLON, "Expected ':' after constructor name", diagnostics)
+            val constructorType = parser.parseExpression(diagnostics)
+            parser.consume(TokenType.SEMICOLON, "Expected ';' after constructor declaration", diagnostics)
+
+            if (!constructorNameSet.add(constructorNameToken.text)) {
+                diagnostics += Diagnostic(
+                    message = "duplicate constructor name '${constructorNameToken.text}'",
+                    line = constructorNameToken.line,
+                    column = constructorNameToken.column,
+                    startOffset = constructorNameToken.startOffset,
+                    endOffset = constructorNameToken.endOffset,
+                )
+            }
+
+            val span = TextSpan(constructorNameToken.startOffset, constructorNameToken.endOffset)
+            val member = NewtypeMember(constructorNameToken.text, constructorType, span)
+            constructors += member
+
+            validateInductiveConstructor(typeNameToken.text, member, diagnostics)
+        }
+
+        val closingBrace = parser.consume(TokenType.RBRACE, "Expected '}' after inductive block", diagnostics)
+
+        val typeName = typeNameToken.text
+        val typeNameSpan = TextSpan(typeNameToken.startOffset, typeNameToken.endOffset)
+        val generatedRecursorSpan = TextSpan(closingBrace.startOffset, closingBrace.startOffset)
+        val recursorName = "$typeName.rec"
+
+        val existingDefinitionNames = definitions.map { it.name }.toMutableSet()
+        if (recursorName in existingDefinitionNames || recursorName in constructors.map { it.name }.toSet()) {
+            diagnostics += Diagnostic(
+                message = "generated recursor name already exists: $recursorName",
+                line = typeNameToken.line,
+                column = typeNameToken.column,
+                startOffset = typeNameToken.startOffset,
+                endOffset = typeNameToken.endOffset,
+            )
+        }
+
+        val recursorType = generateInductiveRecursorType(typeName, constructors)
+        val recursorMember = NewtypeMember(
+            name = recursorName,
+            type = recursorType,
+            nameSpan = generatedRecursorSpan,
+        )
+
+        val generatedRules = generateInductiveRules(typeName, constructors, generatedRecursorSpan)
+        val existingRuleNames = parser.rewriteRules.map { it.name }.toMutableSet()
+        generatedRules.forEach { rule ->
+            if (!existingRuleNames.add(rule.name)) {
+                diagnostics += Diagnostic(
+                    message = "generated rule name already exists: ${rule.name}",
+                    line = rule.nameSpan.startOffset.let { offsetToLineColumn(it).first },
+                    column = rule.nameSpan.startOffset.let { offsetToLineColumn(it).second },
+                    startOffset = rule.nameSpan.startOffset,
+                    endOffset = rule.nameSpan.endOffset,
+                )
+            }
+        }
+
+        definitions += Definition(
+            name = typeName,
+            kind = DefinitionKind.NEWTYPE,
+            type = typeSignature,
+            implementation = null,
+            nameSpan = typeNameSpan,
+            keywordSpan = TextSpan(keywordToken.startOffset, keywordToken.endOffset),
+            terminatorSpan = null,
+        )
+
+        constructors.forEach { member ->
+            definitions += Definition(
+                name = member.name,
+                kind = DefinitionKind.AXIOM,
+                type = member.type,
+                implementation = null,
+                nameSpan = member.nameSpan,
+                keywordSpan = null,
+                terminatorSpan = null,
+            )
+        }
+
+        definitions += Definition(
+            name = recursorMember.name,
+            kind = DefinitionKind.RECURSOR,
+            type = recursorMember.type,
+            implementation = null,
+            nameSpan = recursorMember.nameSpan,
+            keywordSpan = null,
+            terminatorSpan = null,
+        )
+
+        parser.rewriteRules += generatedRules
+
+        newtypeRegistries += NewtypeRegistry(
+            typeName = typeName,
+            typeSignature = typeSignature,
+            typeNameSpan = typeNameSpan,
+            constructors = constructors,
+            recursor = recursorMember,
+            rules = generatedRules,
+        )
+    }
+
+    private fun validateInductiveConstructor(typeName: String, constructor: NewtypeMember, diagnostics: MutableList<Diagnostic>) {
+        val (args, result) = peelPis(constructor.type)
+        if (!isExactlyTypeName(result, typeName)) {
+            diagnostics += Diagnostic(
+                message = "constructor does not return enclosing inductive type",
+                line = offsetToLineColumn(constructor.nameSpan.startOffset).first,
+                column = offsetToLineColumn(constructor.nameSpan.startOffset).second,
+                startOffset = constructor.nameSpan.startOffset,
+                endOffset = constructor.nameSpan.endOffset,
+            )
+        }
+
+        args.forEach { arg ->
+            if (containsTypeName(arg.type, typeName) && !isExactlyTypeName(arg.type, typeName)) {
+                diagnostics += Diagnostic(
+                    message = "unsupported recursive occurrence",
+                    line = offsetToLineColumn(arg.span.startOffset).first,
+                    column = offsetToLineColumn(arg.span.startOffset).second,
+                    startOffset = arg.span.startOffset,
+                    endOffset = arg.span.endOffset,
+                )
+            }
+        }
+    }
+
+    private fun generateInductiveRecursorType(typeName: String, constructors: List<NewtypeMember>): Term {
+        val pSpan = constructors.firstOrNull()?.nameSpan ?: TextSpan(0, 0)
+        val typeTerm = Term.Variable(typeName, pSpan)
+        val pType = Term.Pi(
+            parameter = "_",
+            parameterType = typeTerm,
+            body = Term.Variable("Type", pSpan),
+            parameterSpan = pSpan,
+            visibility = Term.Visibility.EXPLICIT,
+        )
+
+        var result: Term = Term.Application(Term.Variable("P", pSpan), Term.Variable("x", pSpan), Term.Visibility.EXPLICIT)
+        result = Term.Pi("x", typeTerm, result, pSpan, Term.Visibility.EXPLICIT)
+
+        constructors.asReversed().forEach { constructor ->
+            val caseType = generateConstructorCaseType(typeName, constructor)
+            val caseName = "case_${constructor.name}"
+            result = Term.Pi(caseName, caseType, result, constructor.nameSpan, Term.Visibility.EXPLICIT)
+        }
+
+        return Term.Pi("P", pType, result, pSpan, Term.Visibility.EXPLICIT)
+    }
+
+    private fun generateConstructorCaseType(typeName: String, constructor: NewtypeMember): Term {
+        val (args, _) = peelPis(constructor.type)
+        val ctorVar = Term.Variable(constructor.name, constructor.nameSpan)
+        val appliedCtor = args.fold(ctorVar as Term) { acc, arg ->
+            Term.Application(acc, Term.Variable(arg.name, arg.span), Term.Visibility.EXPLICIT)
+        }
+        var result: Term = Term.Application(Term.Variable("P", constructor.nameSpan), appliedCtor, Term.Visibility.EXPLICIT)
+
+        val binders = mutableListOf<Pair<String, Term>>()
+        args.forEachIndexed { idx, arg ->
+            binders += arg.name to arg.type
+            if (isExactlyTypeName(arg.type, typeName)) {
+                val ihType = Term.Application(Term.Variable("P", arg.span), Term.Variable(arg.name, arg.span), Term.Visibility.EXPLICIT)
+                binders += "ih$idx" to ihType
+            }
+        }
+
+        binders.asReversed().forEach { (name, type) ->
+            result = Term.Pi(name, type, result, constructor.nameSpan, Term.Visibility.EXPLICIT)
+        }
+        return result
+    }
+
+    private fun generateInductiveRules(typeName: String, constructors: List<NewtypeMember>, generatedSpan: TextSpan): List<RewriteRule> {
+        val recName = "$typeName.rec"
+        val recVar = Term.Variable(recName, TextSpan(0, 0))
+        val pVar = Term.Variable("P", TextSpan(0, 0))
+        val caseVars = constructors.map { Term.Variable("case_${it.name}", it.nameSpan) }
+
+        return constructors.map { constructor ->
+            val (args, _) = peelPis(constructor.type)
+            val ctorCall = args.fold(Term.Variable(constructor.name, constructor.nameSpan) as Term) { acc, arg ->
+                Term.Application(acc, Term.Variable(arg.name, arg.span), Term.Visibility.EXPLICIT)
+            }
+
+            val lhsArgs = mutableListOf<Term>()
+            lhsArgs += pVar
+            lhsArgs += caseVars
+            lhsArgs += ctorCall
+            val lhs = lhsArgs.fold(recVar as Term) { acc, arg ->
+                Term.Application(acc, arg, Term.Visibility.EXPLICIT)
+            }
+
+            val caseCallArgs = mutableListOf<Term>()
+            args.forEach { arg ->
+                val argVar = Term.Variable(arg.name, arg.span)
+                caseCallArgs += argVar
+                if (isExactlyTypeName(arg.type, typeName)) {
+                    val ihArgs = mutableListOf<Term>()
+                    ihArgs += pVar
+                    ihArgs += caseVars
+                    ihArgs += argVar
+                    val ih = ihArgs.fold(recVar as Term) { acc, value ->
+                        Term.Application(acc, value, Term.Visibility.EXPLICIT)
+                    }
+                    caseCallArgs += ih
+                }
+            }
+
+            val rhs = caseCallArgs.fold(Term.Variable("case_${constructor.name}", constructor.nameSpan) as Term) { acc, arg ->
+                Term.Application(acc, arg, Term.Visibility.EXPLICIT)
+            }
+
+            val ruleName = "$recName.${constructor.name}"
+            RewriteRule(
+                name = ruleName,
+                lhs = lhs,
+                rhs = rhs,
+                keywordSpan = generatedSpan,
+                nameSpan = generatedSpan,
+            )
+        }
+    }
+
+    private fun peelPis(type: Term): Pair<List<InductiveArg>, Term> {
+        val args = mutableListOf<InductiveArg>()
+        var current = type
+        var index = 0
+        while (current is Term.Pi) {
+            val raw = current.parameter
+            val generated = if (raw.isBlank() || raw == "_" || raw.startsWith("_anon")) "arg$index" else raw
+            args += InductiveArg(generated, current.parameterType, current.parameterSpan)
+            current = current.body
+            index += 1
+        }
+        return args to current
+    }
+
+    private fun isExactlyTypeName(term: Term, typeName: String): Boolean {
+        return when (term) {
+            is Term.Variable -> term.name == typeName
+            is Term.Constant -> term.name == typeName
+            else -> false
+        }
+    }
+
+    private fun containsTypeName(term: Term, typeName: String): Boolean {
+        return when (term) {
+            is Term.Variable -> term.name == typeName
+            is Term.Constant -> term.name == typeName
+            is Term.Meta -> false
+            is Term.Typed -> containsTypeName(term.term, typeName) || containsTypeName(term.type, typeName)
+            is Term.Application -> containsTypeName(term.function, typeName) || containsTypeName(term.argument, typeName)
+            is Term.Lambda -> containsTypeName(term.parameterType, typeName) || containsTypeName(term.body, typeName)
+            is Term.Pi -> containsTypeName(term.parameterType, typeName) || containsTypeName(term.body, typeName)
+        }
+    }
+
+    private fun targetsType(type: Term): Boolean {
+        var current = type
+        while (current is Term.Pi) {
+            current = current.body
+        }
+        return when (current) {
+            is Term.Variable -> current.name == "Type"
+            is Term.Constant -> current.name == "Type"
+            else -> false
+        }
+    }
+
+    private fun offsetToLineColumn(offset: Int): Pair<Int, Int> {
+        val safe = offset.coerceIn(0, parser.sourceText.length)
+        var line = 1
+        var column = 1
+        var i = 0
+        while (i < safe) {
+            if (parser.sourceText[i] == '\n') {
+                line += 1
+                column = 1
+            } else {
+                column += 1
+            }
+            i += 1
+        }
+        return line to column
+    }
+
+    private data class InductiveArg(
+        val name: String,
+        val type: Term,
+        val span: TextSpan,
+    )
 
     private fun isTelescopeStart(token: Token): Boolean {
         return token.type == TokenType.LPAREN ||

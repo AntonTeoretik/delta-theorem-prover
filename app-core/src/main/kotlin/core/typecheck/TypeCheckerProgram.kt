@@ -321,7 +321,7 @@ internal fun TypeChecker.checkRulePatternAgainstExpectedType(
     expectedType: Term,
     locals: MutableMap<String, Term>,
 ): Boolean {
-    return when (term) {
+        return when (term) {
         is Term.Variable -> {
             if (term.name == "Type") {
                 val inferred = inferType(term, locals) ?: return false
@@ -353,12 +353,42 @@ internal fun TypeChecker.checkRulePatternAgainstExpectedType(
             }
         }
 
-        is Term.Application -> {
-            val functionType = inferType(term.function, locals)?.let { normalize(it) }
-            if (functionType !is Term.Pi) {
-                report(spanOf(term), "Cannot apply non-function term in rule pattern: ${pretty(term.function)}")
-                return false
-            }
+            is Term.Application -> {
+                val (head, args) = decomposeApplication(term)
+                val headName = when (head) {
+                    is Term.Variable -> head.name
+                    is Term.Constant -> head.name
+                    else -> null
+                }
+
+                if (headName != null && headName in globals) {
+                    var currentType = normalize(globals.getValue(headName).type)
+                    for (arg in args) {
+                        val functionType = normalize(currentType)
+                        if (functionType !is Term.Pi) {
+                            report(spanOf(term), "Cannot apply non-function term in rule pattern: ${pretty(head)}")
+                            return false
+                        }
+
+                        if (!checkRulePatternAgainstExpectedType(arg, functionType.parameterType, locals)) {
+                            return false
+                        }
+
+                        currentType = normalize(substitute(functionType.body, functionType.parameter, arg))
+                    }
+
+                    if (!convertibleInContext(currentType, expectedType, locals)) {
+                        report(spanOf(term), "Rule pattern expected ${pretty(expectedType)}, got ${pretty(currentType)}")
+                        return false
+                    }
+                    return true
+                }
+
+                val functionType = inferType(term.function, locals)?.let { normalize(it) }
+                if (functionType !is Term.Pi) {
+                    report(spanOf(term), "Cannot apply non-function term in rule pattern: ${pretty(term.function)}")
+                    return false
+                }
 
             if (!checkRulePatternAgainstExpectedType(term.argument, functionType.parameterType, locals)) {
                 return false
