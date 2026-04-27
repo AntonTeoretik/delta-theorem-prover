@@ -127,6 +127,14 @@ internal fun TypeChecker.inferApplicationType(term: Term.Application, locals: Ma
 }
 
 internal fun TypeChecker.checkTermAgainst(term: Term, expectedType: Term, locals: Map<String, Term>): Boolean {
+    if (term is Term.Case) {
+        val ok = checkCaseTermAgainst(term, expectedType, locals)
+        if (ok) {
+            inferredTypes[term] = zonk(expectedType)
+        }
+        return ok
+    }
+
     val expectedElaborated = elaborateImplicitApplications(zonk(expectedType), locals, requireMetaResolution = false)
     val expected = whnf(expectedElaborated)
 
@@ -159,14 +167,6 @@ internal fun TypeChecker.checkTermAgainst(term: Term, expectedType: Term, locals
         val extended = extendLocalsWithBinder(locals, term.parameter, expected.parameterType, term.parameterSpan)
         val expectedBody = substitute(expected.body, expected.parameter, Term.Variable(term.parameter, term.parameterSpan))
         return checkTermAgainst(term.body, expectedBody, extended)
-    }
-
-    if (term is Term.Case) {
-        val ok = checkCaseTermAgainst(term, expected, locals)
-        if (ok) {
-            inferredTypes[term] = expected
-        }
-        return ok
     }
 
     val inferred = inferType(term, locals) ?: return false

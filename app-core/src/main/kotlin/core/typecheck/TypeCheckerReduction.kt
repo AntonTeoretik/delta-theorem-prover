@@ -36,7 +36,7 @@ internal fun TypeChecker.whnf(term: Term, unfolding: MutableSet<String> = linked
                 if (fn.visibility == term.visibility) {
                     whnf(substitute(fn.body, fn.parameter, term.argument), unfolding)
                 } else if (fn.visibility == Term.Visibility.IMPLICIT && term.visibility == Term.Visibility.EXPLICIT) {
-                    val placeholder = freshRewritePlaceholderMeta(spanOf(term.argument))
+                    val placeholder = freshImplicitMeta(fn.parameterType, emptyMap(), spanOf(term.argument), requiresResolution = false)
                     val afterImplicit = substitute(fn.body, fn.parameter, placeholder)
                     whnf(Term.Application(afterImplicit, term.argument, Term.Visibility.EXPLICIT), unfolding)
                 } else {
@@ -108,7 +108,7 @@ internal fun TypeChecker.normalize(term: Term, unfolding: MutableSet<String> = l
                 if (fn.visibility == term.visibility) {
                     normalize(substitute(fn.body, fn.parameter, arg), unfolding)
                 } else if (fn.visibility == Term.Visibility.IMPLICIT && term.visibility == Term.Visibility.EXPLICIT) {
-                    val placeholder = freshRewritePlaceholderMeta(spanOf(arg))
+                    val placeholder = freshImplicitMeta(fn.parameterType, emptyMap(), spanOf(arg), requiresResolution = false)
                     val afterImplicit = substitute(fn.body, fn.parameter, placeholder)
                     normalize(Term.Application(afterImplicit, arg, Term.Visibility.EXPLICIT), unfolding)
                 } else {
@@ -234,13 +234,16 @@ internal fun TypeChecker.reduceCaseAtRoot(term: Term.Case): Term? {
     } ?: return null
 
     val branch = term.branches.firstOrNull { it.constructorName == headName } ?: return null
-    if (branch.parameters.size != args.size) {
+    if (args.size < branch.parameters.size) {
         return null
     }
+    val patternArgs = args.takeLast(branch.parameters.size)
 
     var result: Term = branch.body
-    branch.parameters.zip(args).forEach { (parameter, argument) ->
-        result = substitute(result, parameter.name, argument)
+    branch.parameters.zip(patternArgs).forEach { (parameter, argument) ->
+        if (parameter.name != "_") {
+            result = substitute(result, parameter.name, argument)
+        }
     }
     return result
 }
@@ -271,8 +274,7 @@ internal fun TypeChecker.alignRewriteApplicationForHead(term: Term, headName: St
     val alignedArgs = mutableListOf<AppliedArg>()
     args.forEach { arg ->
         while (currentType is Term.Pi && (currentType as Term.Pi).visibility == Term.Visibility.IMPLICIT && arg.visibility == Term.Visibility.EXPLICIT) {
-            val inferredFromExplicit = withSuppressedDiagnostics { inferType(arg.term, emptyMap())?.let { zonk(it) } }
-            val implicitArgument = inferredFromExplicit ?: freshRewritePlaceholderMeta(spanOf(arg.term))
+            val implicitArgument = freshRewritePlaceholderMeta(spanOf(arg.term))
             alignedArgs += AppliedArg(implicitArgument, Term.Visibility.IMPLICIT)
             currentType = whnf(zonk(substitute((currentType as Term.Pi).body, (currentType as Term.Pi).parameter, implicitArgument)))
         }
