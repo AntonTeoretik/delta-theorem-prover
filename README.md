@@ -1,3 +1,6 @@
+# This is AI generated project, just to test it's ability to do something fun.
+Everything below is generated and might be not up to date
+
 # Delta Theorem Prover - MVP Skeleton
 
 Minimal standalone desktop skeleton for future mini theorem prover.
