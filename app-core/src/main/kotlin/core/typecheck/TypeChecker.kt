@@ -34,8 +34,10 @@ class TypeChecker(
     private val rewriteRulesByHead = linkedMapOf<String, MutableList<RegisteredRewriteRule>>()
     private val metaContext = linkedMapOf<Int, MetaEntry>()
     private var nextMetaId: Int = 0
+    private var nextRewritePlaceholderMetaId: Int = -1
     private var nextTypeHintId: Int = 0
     private var traceSink: MutableList<String>? = null
+    private var suppressedDiagnosticsDepth: Int = 0
 
     init {
         val type = typeUniverseTerm()
@@ -826,8 +828,23 @@ class TypeChecker(
             is Term.Typed -> whnf(term.term, unfolding)
             is Term.Application -> {
                 val fn = whnf(term.function, unfolding)
-                if (fn is Term.Lambda && fn.visibility == term.visibility) {
-                    whnf(substitute(fn.body, fn.parameter, term.argument), unfolding)
+                if (fn is Term.Lambda) {
+                    if (fn.visibility == term.visibility) {
+                        whnf(substitute(fn.body, fn.parameter, term.argument), unfolding)
+                    } else if (fn.visibility == Term.Visibility.IMPLICIT && term.visibility == Term.Visibility.EXPLICIT) {
+                        val placeholder = freshRewritePlaceholderMeta(spanOf(term.argument))
+                        val afterImplicit = substitute(fn.body, fn.parameter, placeholder)
+                        whnf(Term.Application(afterImplicit, term.argument, Term.Visibility.EXPLICIT), unfolding)
+                    } else {
+                        val candidate = Term.Application(fn, term.argument, term.visibility)
+                        val rewrite = rewriteAtRoot(candidate)
+                        if (rewrite != null) {
+                            traceStep("whnf rewrite: ${rewrite.ruleName}")
+                            whnf(rewrite.term, unfolding)
+                        } else {
+                            candidate
+                        }
+                    }
                 } else {
                     val candidate = Term.Application(fn, term.argument, term.visibility)
                     val rewrite = rewriteAtRoot(candidate)
@@ -887,8 +904,17 @@ class TypeChecker(
             is Term.Application -> {
                 val fn = normalize(term.function, unfolding)
                 val arg = normalize(term.argument, unfolding)
-                if (fn is Term.Lambda && fn.visibility == term.visibility) {
-                    normalize(substitute(fn.body, fn.parameter, arg), unfolding)
+                if (fn is Term.Lambda) {
+                    if (fn.visibility == term.visibility) {
+                        normalize(substitute(fn.body, fn.parameter, arg), unfolding)
+                    } else if (fn.visibility == Term.Visibility.IMPLICIT && term.visibility == Term.Visibility.EXPLICIT) {
+                        val placeholder = freshRewritePlaceholderMeta(spanOf(arg))
+                        val afterImplicit = substitute(fn.body, fn.parameter, placeholder)
+                        normalize(Term.Application(afterImplicit, arg, Term.Visibility.EXPLICIT), unfolding)
+                    } else {
+                        val normalizedApplication = Term.Application(fn, arg, term.visibility)
+                        applyRewriteRules(normalizedApplication, unfolding)
+                    }
                 } else {
                     val normalizedApplication = Term.Application(fn, arg, term.visibility)
                     applyRewriteRules(normalizedApplication, unfolding)
@@ -1034,15 +1060,105 @@ class TypeChecker(
             else -> return null
         }
         val rules = rewriteRulesByHead[headName] ?: return null
+        val alignedTarget = canonicalizeRewriteTerm(alignRewriteApplicationForHead(term, headName))
 
         rules.forEach { rule ->
             val substitutions = linkedMapOf<String, Term>()
-            if (matchRewritePattern(rule.lhs, term, rule.patternVariables, substitutions)) {
+            val alignedPattern = canonicalizeRewriteTerm(alignRewriteApplicationForHead(rule.lhs, headName))
+            if (matchRewritePattern(alignedPattern, alignedTarget, rule.patternVariables, substitutions)) {
                 return RewriteOutcome(ruleName = rule.name, term = instantiateRuleRhs(rule.rhs, substitutions))
             }
         }
 
         return null
+    }
+
+    private fun alignRewriteApplicationForHead(term: Term, headName: String): Term {
+        val headType = globals[headName]?.type ?: return term
+        val decomposition = decomposeApplicationWithVisibility(term)
+        val head = decomposition.first
+        val args = decomposition.second
+        var currentType: Term = whnf(zonk(headType))
+        val alignedArgs = mutableListOf<AppliedArg>()
+
+        args.forEach { arg ->
+            while (currentType is Term.Pi && currentType.visibility == Term.Visibility.IMPLICIT && arg.visibility == Term.Visibility.EXPLICIT) {
+                val inferredFromExplicit = withSuppressedDiagnostics {
+                    inferType(arg.term, emptyMap())?.let { zonk(it) }
+                }
+                val implicitArgument = inferredFromExplicit ?: freshRewritePlaceholderMeta(spanOf(arg.term))
+                alignedArgs += AppliedArg(implicitArgument, Term.Visibility.IMPLICIT)
+                currentType = whnf(zonk(substitute(currentType.body, currentType.parameter, implicitArgument)))
+            }
+
+            if (currentType is Term.Pi) {
+                alignedArgs += arg
+                currentType = whnf(zonk(substitute(currentType.body, currentType.parameter, arg.term)))
+            } else {
+                alignedArgs += arg
+            }
+        }
+
+        return alignedArgs.fold(head) { acc, arg ->
+            Term.Application(acc, arg.term, arg.visibility)
+        }
+    }
+
+    private fun decomposeApplicationWithVisibility(term: Term): Pair<Term, List<AppliedArg>> {
+        val args = mutableListOf<AppliedArg>()
+        var current = term
+        while (current is Term.Application) {
+            args.add(AppliedArg(current.argument, current.visibility))
+            current = current.function
+        }
+        args.reverse()
+        return current to args
+    }
+
+    private fun freshRewritePlaceholderMeta(span: TextSpan?): Term.Meta {
+        val safeSpan = span ?: TextSpan(0, 0)
+        return Term.Meta(nextRewritePlaceholderMetaId--, safeSpan)
+    }
+
+    private fun canonicalizeRewriteTerm(term: Term): Term {
+        return when (term) {
+            is Term.Meta,
+            is Term.Variable,
+            is Term.Constant,
+            -> term
+
+            is Term.Typed -> Term.Typed(
+                term = canonicalizeRewriteTerm(term.term),
+                type = canonicalizeRewriteTerm(term.type),
+            )
+
+            is Term.Lambda -> term.copy(
+                parameterType = canonicalizeRewriteTerm(term.parameterType),
+                body = canonicalizeRewriteTerm(term.body),
+            )
+
+            is Term.Pi -> term.copy(
+                parameterType = canonicalizeRewriteTerm(term.parameterType),
+                body = canonicalizeRewriteTerm(term.body),
+            )
+
+            is Term.Application -> {
+                val function = canonicalizeRewriteTerm(term.function)
+                val argument = canonicalizeRewriteTerm(term.argument)
+                val rebuilt = Term.Application(function, argument, term.visibility)
+                val (head, _) = decomposeApplication(rebuilt)
+                val headName = when (head) {
+                    is Term.Variable -> head.name
+                    is Term.Constant -> head.name
+                    else -> null
+                }
+                if (headName != null && globals.containsKey(headName)) {
+                    alignRewriteApplicationForHead(rebuilt, headName)
+                } else {
+                    rebuilt
+                }
+            }
+        }
     }
 
     private fun matchRewritePattern(
@@ -1449,6 +1565,9 @@ class TypeChecker(
     }
 
     private fun report(span: TextSpan?, message: String) {
+        if (suppressedDiagnosticsDepth > 0) {
+            return
+        }
         val (line, column) = offsetToLineColumn(span?.startOffset ?: 0)
         diagnostics += Diagnostic(
             message = message,
@@ -1457,6 +1576,15 @@ class TypeChecker(
             startOffset = span?.startOffset,
             endOffset = span?.endOffset,
         )
+    }
+
+    private inline fun <T> withSuppressedDiagnostics(block: () -> T): T {
+        suppressedDiagnosticsDepth += 1
+        return try {
+            block()
+        } finally {
+            suppressedDiagnosticsDepth -= 1
+        }
     }
 
     private fun traceStep(message: String) {
@@ -1518,6 +1646,11 @@ class TypeChecker(
     private data class ReductionOutcome(
         val term: Term,
         val reason: String,
+    )
+
+    private data class AppliedArg(
+        val term: Term,
+        val visibility: Term.Visibility,
     )
 
     private sealed interface TopLevelEntry {
