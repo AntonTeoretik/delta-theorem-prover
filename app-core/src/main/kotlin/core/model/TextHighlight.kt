@@ -9,6 +9,7 @@ enum class TextHighlightKind {
     DEFINITION_NAME,
     RULE_KEYWORD,
     RULE_NAME,
+    COMMENT,
     CONSTANT,
     TYPE_UNIVERSE,
     FREE_VARIABLE,

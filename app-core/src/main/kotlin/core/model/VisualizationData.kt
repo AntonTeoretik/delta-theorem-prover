@@ -49,6 +49,12 @@ data class EvaluationTrace(
     val steps: List<EvaluationStep>,
 )
 
+data class DefinitionStatus(
+    val line: Int,
+    val isOk: Boolean,
+    val messages: List<String>,
+)
+
 data class TermEdge(
     val id: String,
     val fromNodeId: String,
@@ -64,6 +70,7 @@ data class VisualizationData(
     val typeHints: List<TypeHint>,
     val activeTypeCheckTrace: TypeCheckTrace?,
     val activeEvaluationTrace: EvaluationTrace?,
+    val definitionStatuses: List<DefinitionStatus>,
     val symbolReplacements: Map<String, String>,
     val infixDeclarations: List<InfixDeclaration>,
     val definitionNames: List<String>,

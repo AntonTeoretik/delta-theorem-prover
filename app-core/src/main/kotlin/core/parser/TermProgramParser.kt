@@ -209,16 +209,24 @@ internal class TermProgramParser(private val parser: TermSyntaxParser) {
                 implementation = parser.parseExpression(diagnostics)
             }
 
+            val terminatorSpan = if (parser.match(TokenType.SEMICOLON)) {
+                val semicolon = parser.previous()
+                TextSpan(semicolon.startOffset, semicolon.endOffset)
+            } else {
+                null
+            }
+
             definitions.add(
                 Definition(
                     name = nameToken.text,
                     type = type,
                     implementation = implementation,
                     nameSpan = TextSpan(nameToken.startOffset, nameToken.endOffset),
+                    terminatorSpan = terminatorSpan,
                 ),
             )
 
-            if (!parser.match(TokenType.SEMICOLON)) {
+            if (terminatorSpan == null) {
                 val token = parser.peek()
                 diagnostics.add(
                     Diagnostic(

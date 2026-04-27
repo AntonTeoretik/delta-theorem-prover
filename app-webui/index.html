@@ -32,6 +32,7 @@
           <pre id="editorLineNumbers" aria-hidden="true"></pre>
           <pre id="editorHighlight" aria-hidden="true"></pre>
           <textarea id="editorInput" spellcheck="false"></textarea>
+          <div id="editorStatusMarkers" aria-hidden="true"></div>
           <div id="editorCaretOverlay" aria-hidden="true"></div>
         </div>
       </section>
@@ -45,7 +46,16 @@
           <div id="evaluationOutput"></div>
         </section>
         <section class="report-wrap">
-          <h2>Report</h2>
+          <div class="report-head">
+            <h2>Report</h2>
+            <div class="report-controls">
+              <label class="compact-toggle" for="traceToggle">
+                <input id="traceToggle" type="checkbox" />
+                <span>show typecheck trace</span>
+              </label>
+              <span id="reportStatusBadge" class="report-status-badge" aria-live="polite"></span>
+            </div>
+          </div>
           <pre id="reportOutput">No diagnostics.</pre>
         </section>
       </section>
@@ -74,6 +84,7 @@
   <script src="./editor/overlay.js"></script>
   <script src="./editor/tooltips.js"></script>
   <script src="./editor/caretOverlay.js"></script>
+  <script src="./editor/statusMarkers.js"></script>
   <script src="./editor/inputHandlers.js"></script>
   <script src="./graph/interactions.js"></script>
   <script src="./app/bootstrap.js"></script>

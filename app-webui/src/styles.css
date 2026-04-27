@@ -165,6 +165,10 @@ body {
   font-weight: 700;
 }
 
+.hl-comment {
+  color: rgba(122, 128, 136, 0.9);
+}
+
 .hl-type-universe {
   color: rgba(134, 196, 255, 0.98);
   text-shadow: 0 0 12px rgba(115, 180, 255, 0.24);
@@ -349,6 +353,33 @@ body {
   color: #f3d7b8;
 }
 
+.report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.report-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.report-status-badge {
+  min-width: 18px;
+  text-align: center;
+  font: 700 14px/1 "Segoe UI", sans-serif;
+}
+
+.report-status-badge.ok {
+  color: rgba(134, 194, 145, 0.95);
+}
+
+.report-status-badge.error {
+  color: rgba(206, 130, 130, 0.92);
+}
+
 #reportOutput {
   margin: 0;
   overflow: auto;
@@ -412,6 +443,39 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.32);
+}
+
+#editorStatusMarkers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.status-marker {
+  position: absolute;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font: 700 11px/1 "Segoe UI", sans-serif;
+  pointer-events: auto;
+  user-select: none;
+  cursor: default;
+}
+
+.status-marker.ok {
+  color: rgba(132, 194, 145, 0.92);
+  background: rgba(88, 136, 98, 0.18);
+  border: 1px solid rgba(120, 176, 132, 0.32);
+}
+
+.status-marker.error {
+  color: rgba(199, 137, 137, 0.92);
+  background: rgba(136, 86, 86, 0.2);
+  border: 1px solid rgba(184, 120, 120, 0.3);
 }
 
 @media (max-width: 900px) {

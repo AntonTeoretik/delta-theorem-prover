@@ -7,6 +7,7 @@
       typeHints: [],
       activeTypeCheckTrace: null,
       activeEvaluationTrace: null,
+      definitionStatuses: [],
       symbolReplacements: {},
       definitionNames: [],
       selectedDefinitionName: null,

@@ -1,13 +1,30 @@
 (function initDeltaReportPanel(global) {
-  function renderDiagnosticsReport(reportOutput, payload) {
+  function renderDiagnosticsReport(reportOutput, statusBadge, payload, showTypecheckTrace) {
     const diagnostics = payload?.diagnostics || [];
     const trace = payload?.activeTypeCheckTrace;
 
     const diagnosticsBlock = diagnostics.length === 0
-      ? 'No diagnostics.'
+      ? 'All checks passed.'
       : diagnostics
         .map((diag, index) => `${index + 1}. [${diag.line}:${diag.column}] ${diag.message}`)
         .join('\n');
+
+    if (statusBadge) {
+      if (diagnostics.length === 0) {
+        statusBadge.textContent = '✓';
+        statusBadge.className = 'report-status-badge ok';
+        statusBadge.title = 'No diagnostics';
+      } else {
+        statusBadge.textContent = '✕';
+        statusBadge.className = 'report-status-badge error';
+        statusBadge.title = `${diagnostics.length} diagnostics`; 
+      }
+    }
+
+    if (!showTypecheckTrace) {
+      reportOutput.textContent = diagnosticsBlock;
+      return;
+    }
 
     const traceBlock = !trace
       ? 'Typecheck trace for current line: unavailable.'

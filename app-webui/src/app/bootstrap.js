@@ -5,10 +5,13 @@
     const editorLineNumbers = document.getElementById('editorLineNumbers');
     const editorLayer = document.querySelector('.editor-layer');
     const editorCaretOverlay = document.getElementById('editorCaretOverlay');
+    const editorStatusMarkers = document.getElementById('editorStatusMarkers');
     const hoverTooltip = document.getElementById('hoverTooltip');
     const canvas = document.getElementById('vizCanvas');
     const stats = document.getElementById('stats');
     const reportOutput = document.getElementById('reportOutput');
+    const reportStatusBadge = document.getElementById('reportStatusBadge');
+    const traceToggle = document.getElementById('traceToggle');
     const compactToggle = document.getElementById('compactToggle');
     const evaluationToggle = document.getElementById('evaluationToggle');
     const definitionBar = document.getElementById('definitionBar');
@@ -26,6 +29,7 @@
     const tooltipApi = global.DeltaEditorTooltips;
     const caretOverlayApi = global.DeltaEditorCaretOverlay;
     const inputHandlersApi = global.DeltaEditorInputHandlers;
+    const statusMarkersApi = global.DeltaEditorStatusMarkers;
     const graphInteractionsApi = global.DeltaGraphInteractions;
     const reportPanelApi = global.DeltaReportPanel;
     const evaluationPanelApi = global.DeltaEvaluationPanel;
@@ -40,6 +44,7 @@
       || !tooltipApi
       || !caretOverlayApi
       || !inputHandlersApi
+      || !statusMarkersApi
       || !graphInteractionsApi
       || !reportPanelApi
       || !evaluationPanelApi) {
@@ -81,6 +86,7 @@
     } = tooltipApi;
     const { updateEditorCaretOverlay } = caretOverlayApi;
     const { attachEditorInputHandlers } = inputHandlersApi;
+    const { renderDefinitionStatusMarkers } = statusMarkersApi;
     const { attachGraphInteractions } = graphInteractionsApi;
     const { renderDiagnosticsReport } = reportPanelApi;
     const { renderEvaluationPanel } = evaluationPanelApi;
@@ -91,8 +97,10 @@
       editorLineNumbers,
       editorLayer,
       editorCaretOverlay,
+      editorStatusMarkers,
       hoverTooltip,
       reportOutput,
+      reportStatusBadge,
       evaluationWrap,
       evaluationOutput,
     };
@@ -126,6 +134,7 @@
       editorLineNumbers.style.transform = `translateY(${-editorInput.scrollTop}px)`;
       refreshCaretOverlay();
       refreshEditorTypeHintRects(state.lastPayload?.typeHints || []);
+      renderDefinitionStatusMarkers(state, elements, state.lastPayload, showGlobalTooltip, hideGlobalTooltip);
     }
 
     function renderEditor(payload) {
@@ -133,6 +142,7 @@
       syncEditorOverlayScroll();
       refreshEditorTypeHintRects(payload?.typeHints || []);
       refreshCaretOverlay();
+      renderDefinitionStatusMarkers(state, elements, payload, showGlobalTooltip, hideGlobalTooltip);
     }
 
     function renderEditorWithCurrentHighlights() {
@@ -174,7 +184,7 @@
       state.lastPayload.symbolReplacements = state.activeSymbolReplacements;
       state.renderedPayload = compactify(state.lastPayload, compactToggle.checked);
       renderDefinitionBar(definitionBar, state.renderedPayload, notifyHostDefinitionSelected);
-      renderDiagnosticsReport(reportOutput, state.renderedPayload);
+      renderDiagnosticsReport(reportOutput, reportStatusBadge, state.renderedPayload, Boolean(traceToggle?.checked));
       renderEvaluationPanel(evaluationWrap, evaluationOutput, state.renderedPayload, Boolean(evaluationToggle?.checked));
 
       if (resetView) {
@@ -244,6 +254,10 @@
     });
 
     evaluationToggle?.addEventListener('change', () => {
+      renderCurrent(false);
+    });
+
+    traceToggle?.addEventListener('change', () => {
       renderCurrent(false);
     });
 

@@ -5,6 +5,7 @@ data class Definition(
     val type: Term?,
     val implementation: Term?,
     val nameSpan: TextSpan?,
+    val terminatorSpan: TextSpan? = null,
 )
 
 data class RewriteRule(
@@ -32,5 +33,6 @@ data class ParsedDocument(
     val definitions: List<Definition>,
     val rewriteRules: List<RewriteRule> = emptyList(),
     val infixDeclarations: List<InfixDeclaration> = emptyList(),
+    val commentSpans: List<TextSpan> = emptyList(),
     val diagnostics: List<Diagnostic> = emptyList(),
 )

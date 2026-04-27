@@ -1,6 +1,7 @@
 package core.eval
 
 import core.model.ParsedDocument
+import core.model.DefinitionStatus
 import core.model.SymbolDisplay
 import core.model.Term
 import core.model.TermEdge
@@ -18,6 +19,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         val allDiagnostics = document.diagnostics + typeCheck.diagnostics
         val definitionNames = document.definitions.map { it.name }
         val textHighlights = buildTextHighlights(document, allDiagnostics, caretOffset)
+        val definitionStatuses = buildDefinitionStatuses(document, allDiagnostics)
         val selected = document.definitions.firstOrNull { it.name == selectedDefinitionName }
             ?: document.definitions.firstOrNull()
             ?: return VisualizationData(
@@ -27,6 +29,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 typeHints = typeCheck.typeHints,
                 activeTypeCheckTrace = typeCheck.activeTrace,
                 activeEvaluationTrace = typeCheck.activeEvaluationTrace,
+                definitionStatuses = definitionStatuses,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
                 definitionNames = definitionNames,
@@ -54,6 +57,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
                 typeHints = typeCheck.typeHints,
                 activeTypeCheckTrace = typeCheck.activeTrace,
                 activeEvaluationTrace = typeCheck.activeEvaluationTrace,
+                definitionStatuses = definitionStatuses,
                 symbolReplacements = SymbolDisplay.symbolReplacements,
                 infixDeclarations = document.infixDeclarations,
                 definitionNames = definitionNames,
@@ -79,6 +83,7 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             typeHints = typeCheck.typeHints,
             activeTypeCheckTrace = typeCheck.activeTrace,
             activeEvaluationTrace = typeCheck.activeEvaluationTrace,
+            definitionStatuses = definitionStatuses,
             symbolReplacements = SymbolDisplay.symbolReplacements,
             infixDeclarations = document.infixDeclarations,
             definitionNames = definitionNames,
@@ -123,6 +128,9 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
             highlights += TextHighlight(rule.keywordSpan, TextHighlightKind.RULE_KEYWORD)
             highlights += TextHighlight(rule.nameSpan, TextHighlightKind.RULE_NAME)
         }
+        document.commentSpans.forEach { span ->
+            highlights += TextHighlight(span, TextHighlightKind.COMMENT)
+        }
         collector.freeVariableSpans.forEach { span ->
             highlights += TextHighlight(span, TextHighlightKind.FREE_VARIABLE)
         }
@@ -156,6 +164,35 @@ class SimpleVisualizationEvaluator : VisualizationEvaluator {
         }
 
         return highlights
+    }
+
+    private fun buildDefinitionStatuses(
+        document: ParsedDocument,
+        diagnostics: List<core.model.Diagnostic>,
+    ): List<DefinitionStatus> {
+        return document.definitions.mapNotNull { definition ->
+            val terminator = definition.terminatorSpan ?: return@mapNotNull null
+            val line = offsetToLine(document.sourceText, terminator.startOffset)
+            val lineDiagnostics = diagnostics.filter { it.line == line }
+            DefinitionStatus(
+                line = line,
+                isOk = lineDiagnostics.isEmpty(),
+                messages = lineDiagnostics.map { "[${it.line}:${it.column}] ${it.message}" },
+            )
+        }
+    }
+
+    private fun offsetToLine(source: String, offset: Int): Int {
+        val safeOffset = offset.coerceIn(0, source.length)
+        var line = 1
+        var i = 0
+        while (i < safeOffset) {
+            if (source[i] == '\n') {
+                line += 1
+            }
+            i += 1
+        }
+        return line
     }
 
     private fun resolveActiveConstant(

@@ -2,9 +2,11 @@ package core.parser
 
 import core.model.Diagnostic
 import core.model.SymbolDisplay
+import core.model.TextSpan
 
 internal class TermLexer(private val source: String) {
     val diagnostics: MutableList<Diagnostic> = mutableListOf()
+    val commentSpans: MutableList<TextSpan> = mutableListOf()
 
     private var index: Int = 0
     private var line: Int = 1
@@ -17,6 +19,7 @@ internal class TermLexer(private val source: String) {
             val ch = source[index]
             when {
                 ch.isWhitespace() -> advance(ch)
+                ch == '-' && index + 1 < source.length && source[index + 1] == '-' -> skipLineComment()
                 ch == '\\' -> tokens.add(readBackslashPrefixed())
                 ch == 'λ' -> tokens.add(singleToken(TokenType.LAMBDA, "λ"))
                 ch == '∀' -> tokens.add(singleToken(TokenType.FORALL, "∀"))
@@ -232,6 +235,16 @@ internal class TermLexer(private val source: String) {
         } else {
             column += 1
         }
+    }
+
+    private fun skipLineComment() {
+        val start = index
+        advance('-')
+        advance('-')
+        while (index < source.length && source[index] != '\n') {
+            advance(source[index])
+        }
+        commentSpans += TextSpan(startOffset = start, endOffset = index)
     }
 
     private fun Char.isLambdaSpacing(): Boolean = this == ' ' || this == '\t'

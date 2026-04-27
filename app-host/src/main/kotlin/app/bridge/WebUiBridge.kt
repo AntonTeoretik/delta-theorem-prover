@@ -1,6 +1,7 @@
 package app.bridge
 
 import core.model.Diagnostic
+import core.model.DefinitionStatus
 import core.model.EvaluationStep
 import core.model.EvaluationTrace
 import core.model.InfixDeclaration
@@ -64,6 +65,7 @@ class WebUiBridge(private val browser: CefBrowser) {
         val typeHintsJson = typeHints.joinToString(",") { it.toJson() }
         val activeTraceJson = activeTypeCheckTrace?.toJson() ?: "null"
         val activeEvaluationTraceJson = activeEvaluationTrace?.toJson() ?: "null"
+        val definitionStatusesJson = definitionStatuses.joinToString(",") { it.toJson() }
         val symbolReplacementsJson = symbolReplacements.entries.joinToString(",") { (from, to) ->
             "\"${escapeJson(from)}\":\"${escapeJson(to)}\""
         }
@@ -86,6 +88,7 @@ class WebUiBridge(private val browser: CefBrowser) {
               "typeHints":[$typeHintsJson],
               "activeTypeCheckTrace":$activeTraceJson,
               "activeEvaluationTrace":$activeEvaluationTraceJson,
+              "definitionStatuses":[$definitionStatusesJson],
               "symbolReplacements":{$symbolReplacementsJson},
               "infixDeclarations":[$infixDeclarationsJson],
               "definitionNames":[$definitionsJson],
@@ -125,6 +128,11 @@ class WebUiBridge(private val browser: CefBrowser) {
     private fun EvaluationTrace.toJson(): String {
         val stepsJson = steps.joinToString(",") { it.toJson() }
         return """{"title":"${escapeJson(title)}","line":$line,"steps":[$stepsJson]}"""
+    }
+
+    private fun DefinitionStatus.toJson(): String {
+        val messagesJson = messages.joinToString(",") { "\"${escapeJson(it)}\"" }
+        return """{"line":$line,"isOk":$isOk,"messages":[$messagesJson]}"""
     }
 
     private fun InfixDeclaration.toJson(): String {
