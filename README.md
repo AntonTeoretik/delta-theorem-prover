@@ -1,123 +1,90 @@
-# This is AI generated project, just to test it's ability to do something fun.
-Everything below is generated and might be not up to date
+# This is AI generated project, just to test its ability to do something fun.
+Everything below is generated and might be not up-to-date
 
-# Delta Theorem Prover - MVP Skeleton
+# Delta Theorem Prover
 
-Minimal standalone desktop skeleton for future mini theorem prover.
+A local desktop theorem-prover playground with a Kotlin core, Swing/JCEF host, and web UI.
 
-Current end-to-end flow:
+The project already supports dependent type-checking, implicit arguments, rewrite rules,
+`newtype`/`inductive` generation, and elaboration of `case ... of` into recursors.
 
-1. User edits source text in the Web editor (left pane inside JCEF).
-2. `app-webui` sends source text and caret offset to host bridge.
-3. `app-host` calls `app-core` pipeline (lexer -> parser -> evaluator).
-4. `app-core` returns diagnostics, highlights, symbol map, and graph payload.
-5. `app-host` sends payload back to `app-webui`.
-6. `app-webui` updates editor highlighting and redraws the graph.
+## What works today
 
-## Project structure
+- Dependent core terms: `Type`, `Pi`, `Lambda`, application, typed terms, metas.
+- Definitions and declarations: `def`, `fun`, `lemma`, `theorem`, `axiom`, `recursor`.
+- Infix declarations and Unicode-friendly syntax.
+- Rewrite rules with validation and evaluation support.
+- `newtype` blocks with generated registry metadata.
+- `inductive` blocks (including parameterized non-indexed inductives) with generated:
+  - constructors,
+  - recursor (`T.rec`),
+  - computation rules (`T.rec.<ctor>`).
+- `case ... of` elaboration (check-only) with constructor-coverage checks and recursor lowering.
+- UI diagnostics, definition status markers, highlighting, and term graph rendering.
+
+## Current known limitations
+
+- `case` is check-only: type inference for raw `case` expressions is intentionally rejected.
+- Pattern syntax is first-order only: `c` or `c(x, y, ...)`.
+- No nested patterns or wildcard semantics beyond identifier-level `_` handling.
+- Indexed inductive families are not fully supported (`Vec(A, n)`, `Id`-style indexed elimination).
+- Some advanced dependent `case` scenarios are still under active refinement.
+
+## Repository layout
 
 ```text
-root/
-├── settings.gradle.kts
+.
+├── app-core/      # Kotlin parser, model, typechecker, reduction, tests
+├── app-host/      # Desktop host (Swing + JCEF bridge)
+├── app-webui/     # HTML/CSS/JS editor + report/graph UI
+├── scripts/       # convenience scripts for build/run
 ├── build.gradle.kts
-├── README.md
-├── app-core/
-│   ├── build.gradle.kts
-│   └── src/main/kotlin/core/
-│       ├── model/
-│       ├── parser/
-│       └── eval/
-├── app-host/
-│   ├── build.gradle.kts
-│   └── src/main/kotlin/app/
-│       ├── Main.kt
-│       ├── ui/
-│       ├── editor/
-│       └── bridge/
-├── app-webui/
-│   ├── package.json
-│   ├── index.html
-│   ├── src/
-│   └── dist/
-└── scripts/
+└── settings.gradle.kts
 ```
 
-## Modules
+## Build and run
 
-- `app-core`: pure Kotlin module with parser + AST + evaluator.
-  - Contains term syntax, infix declarations, typed terms, Pi/Meta AST, diagnostics, highlighting spans, and graph model.
-- `app-host`: Swing + JCEF desktop host.
-  - Uses a single embedded JCEF surface to avoid Swing/JCEF focus conflicts.
-  - Contains browser panel and bridge (`Web -> Kotlin -> Web`) for text, caret, and selected definition.
-- `app-webui`: static HTML/CSS/JS renderer loaded inside JCEF.
-  - Contains editor overlay/highlighting, slash symbol input mode, compact graph view, and canvas renderer.
-
-## Data flow
-
-Main flow (`text -> parse -> graph`):
-
-1. User types in `textarea`.
-2. `app-webui` sends `editorTextChanged:<text>`.
-3. `app-host` stores latest text and runs `CorePipeline.buildVisualization(...)`.
-4. `app-core` returns:
-   - diagnostics,
-   - text highlights,
-   - symbol replacements,
-   - definition list,
-   - selected-definition graph (`nodes`, `blueEdges`, `greenEdges`).
-5. `app-host` sends payload via `renderFromHost(...)`.
-6. `app-webui` updates editor overlay and graph.
-
-Caret flow (`cursor -> semantic highlight`):
-
-1. `app-webui` sends `editorCaretMoved:<offset>`.
-2. `app-host` re-evaluates with current caret offset.
-3. `app-core` marks active references (for constants/bound vars).
-4. `app-webui` refreshes highlight spans.
-
-Definition selection flow:
-
-1. User clicks a definition chip.
-2. `app-webui` sends `selectDefinition:<name>`.
-3. `app-host` rebuilds payload for that definition.
-4. `app-webui` redraws graph.
-
-## Requirements
-
+Requirements:
 - JDK 17+
-- Node.js 18+ (for web UI build)
+- Node.js 18+
 
-## Build web UI
+### Run tests
 
-From root:
+```bash
+./gradlew :app-core:test
+```
+
+### Build host app
+
+```bash
+./gradlew :app-host:build
+```
+
+### Build web UI
 
 ```bash
 ./scripts/build-webui.sh
 ```
 
-On Windows:
+Windows:
 
 ```bat
 scripts\build-webui.bat
 ```
 
-This copies `app-webui/index.html` and files from `app-webui/src` into `app-webui/dist`.
-
-## Run desktop app
-
-From root:
+### Run desktop app
 
 ```bash
 ./scripts/run-host.sh
 ```
 
-On Windows:
+Windows:
 
 ```bat
 scripts\run-host.bat
 ```
 
-Or run full flow (build web UI + run app):
+### Full local flow
 
 ```bash
 ./scripts/run-all.sh
@@ -129,50 +96,73 @@ Windows:
 scripts\run-all.bat
 ```
 
-## Syntax (current)
+## Language overview
 
-Program form:
+### Top-level forms
 
 ```text
-name [: term] [:= term];
+name : Type;
+name := term;
+name : Type := term;
 ```
 
-- both type and implementation are optional.
-- a name is treated as a constant when it is defined earlier in the program.
+Keyworded forms are also supported:
 
-Term features:
+```text
+def f : T := ...;
+lemma l : T := ...;
+theorem t : T := ...;
+axiom A : Type;
+```
 
-- variables and application: `t(u, v)`
-- lambda: `λx.t`, `λ(x:A).t`, `λx,y.t`
-- typed term: `t : T` (right-associative)
-- Pi sugar:
-  - `A → B`
-  - `(a : A) → B`
-  - `∀a. B`
-  - `∀(a:A),(b:B),c.T`
-- infix declarations:
-  - `infixl 6 +;`
-  - `infixr 5 \to;`
-- backtick infix use, for example:
-  - `x \`f\` y`
+### Core term syntax
 
-Slash symbol input mode in editor:
+- Lambda: `λ(x : A) => body` or `λx, y => body`
+- Pi: `(x : A) → B`, `A → B`, `∀(x : A) => B`
+- Application: `f(x, y)` and implicit application `f{A}(x)`
+- Type annotation: `t : T`
+- Unicode symbols are accepted (e.g. `ℕ`, `→`, `∀`).
 
-- press `\` to enter special mode,
-- type token (`to`, `a`, `mN`, ...),
-- press space/tab to commit into a single symbol (`→`, `α`, `ℕ`, ...).
+### Inductive and newtype examples
 
-Graph visualization:
+```text
+inductive ℕ : Type {
+  zero : ℕ;
+  succ : ℕ → ℕ;
+}
 
-- `APP`, `TYPE(:)`, `LAMBDA`, `PI`, `META(?mN)`, `VAR`, `CONST`, `ROOT` nodes.
-- blue edges = term structure.
-- green edges = binder links.
-- compact mode merges APP/LAMBDA/PI chains for denser layout.
+newtype = : {A : Type} → A → A → Type {
+  constructor refl : {A : Type} → (x : A) → x = x;
+}
+```
 
-## How to extend toward theorem prover
+Parameterized non-indexed inductives are supported, e.g. existential:
 
-1. Add AST nodes under `app-core/src/main/kotlin/core/model`.
-2. Replace `SimpleTextParser` with real parser in `core/parser`.
-3. Add diagnostics propagation from parser/evaluator to host/web UI.
-4. Replace line-based visualization with tree/graph payload.
-5. Expand `WebUiBridge` protocol with commands/events for richer interactions.
+```text
+inductive ∃ : {A : Type} → (B : A → Type) → Type {
+  make : {A : Type} → {B : A → Type} → (a : A) → (b : B(a)) → ∃{A}(B);
+}
+```
+
+This created recurser, and computation rules 
+
+### Case expressions
+
+```text
+case e of {
+  ctor1(x) => b1;
+  ctor2(y, z) => b2;
+};
+```
+
+`case` elaborates to recursor applications (`T.rec(...)`) and is validated against the expected type.
+
+## Developer notes
+
+- Core logic lives under `app-core/src/main/kotlin/core/typecheck/`.
+- Parser logic is under `app-core/src/main/kotlin/core/parser/`.
+- Model/AST lives under `app-core/src/main/kotlin/core/model/`.
+- Tests are under `app-core/src/test/kotlin/core/`.
+
+If you are changing typechecker behavior, add/adjust focused regression tests first,
+then run `./gradlew :app-core:test`.
