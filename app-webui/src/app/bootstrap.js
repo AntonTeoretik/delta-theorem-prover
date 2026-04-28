@@ -61,7 +61,7 @@
 
     const {
       notifyHostDefinitionSelected,
-      notifyHostTextChanged: bridgeNotifyHostTextChanged,
+      notifyHostTextChanged: notifyHostWithProjectText,
       notifyHostEditorCaretMoved,
     } = bridgeApi;
     const { renderDefinitionBar } = definitionBarApi;
@@ -256,7 +256,7 @@
       state,
       elements,
       renderEditorWithCurrentHighlights,
-      notifyHostTextChanged: bridgeNotifyHostTextChanged,
+      notifyHostTextChanged: notifyHostWithProjectText,
       notifyCaretMoved,
       applyEditorTextChange,
       resetSlashMode: () => resetSlashMode(state),
