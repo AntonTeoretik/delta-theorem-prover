@@ -107,3 +107,39 @@ test('file switch preserves per-file text', () => {
   fileSelect.dispatch('change');
   assert.equal(editorInput.value, 'main text');
 });
+
+
+test('active file change callback fires on add/switch', () => {
+  const windowObj = {
+    prompt: () => 'util.dlt',
+    localStorage: { getItem: () => null, setItem: () => {} },
+    document: { createElement: () => new FakeElement() },
+  };
+  loadProjectManager(windowObj);
+
+  const editorInput = new FakeElement();
+  const fileSelect = new FakeElement();
+  const addFileButton = new FakeElement();
+  const uploadButton = new FakeElement();
+  const uploadInput = new FakeElement();
+  let events = 0;
+
+  const manager = windowObj.DeltaProjectManager.createProjectManager({
+    editorInput,
+    fileSelect,
+    addFileButton,
+    uploadButton,
+    uploadInput,
+    onActiveFileChanged: () => { events += 1; },
+  });
+
+  manager.loadFromSerialized(`--!delta-project v1
+--!file main.dlt
+main text
+`);
+  addFileButton.dispatch('click');
+  fileSelect.value = 'main.dlt';
+  fileSelect.dispatch('change');
+
+  assert.ok(events >= 3);
+});

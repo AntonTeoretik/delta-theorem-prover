@@ -125,6 +125,16 @@
       addFileButton: addProjectFileButton,
       uploadButton: uploadFileButton,
       uploadInput: uploadFileInput,
+      onActiveFileChanged: () => {
+        resetSlashMode(state);
+        renderEditorWithCurrentHighlights();
+        syncEditorOverlayScroll();
+        state.lastSentCaretOffset = -1;
+        if (!state.suppressHostNotify) {
+          notifyHostWithProjectText();
+          notifyCaretMoved();
+        }
+      },
     });
     projectManager.loadFromStorage();
     const renderer = createRenderer({

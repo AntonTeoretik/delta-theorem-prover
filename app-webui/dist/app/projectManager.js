@@ -65,7 +65,7 @@
     return `${HEADER}\n${body}`.trimEnd() + '\n';
   }
 
-  function createProjectManager({ editorInput, fileSelect, addFileButton, uploadButton, uploadInput }) {
+  function createProjectManager({ editorInput, fileSelect, addFileButton, uploadButton, uploadInput, onActiveFileChanged }) {
     let project = createDefaultProject();
 
     function renderFiles() {
@@ -88,6 +88,12 @@
       editorInput.value = normalizeText(file?.content);
     }
 
+    function notifyActiveFileChanged() {
+      if (typeof onActiveFileChanged === 'function') {
+        onActiveFileChanged({ activeFile: project.activeFile, text: editorInput.value });
+      }
+    }
+
     function updateActiveFileContent(text) {
       const file = getActiveFile();
       if (file) file.content = normalizeText(text);
@@ -97,6 +103,7 @@
       project = decodeProject(serialized || '');
       renderFiles();
       syncEditorFromProject();
+      notifyActiveFileChanged();
     }
 
     function serialize() {
@@ -109,6 +116,8 @@
         loadFromSerialized(serialized);
       } else {
         renderFiles();
+        syncEditorFromProject();
+        notifyActiveFileChanged();
       }
     }
 
@@ -121,6 +130,7 @@
       project.activeFile = fileSelect.value;
       syncEditorFromProject();
       autosave();
+      notifyActiveFileChanged();
     });
 
     addFileButton.addEventListener('click', () => {
@@ -134,6 +144,7 @@
       renderFiles();
       syncEditorFromProject();
       autosave();
+      notifyActiveFileChanged();
     });
 
     uploadButton.addEventListener('click', () => uploadInput.click());
@@ -158,6 +169,7 @@
       }
       uploadInput.value = '';
       autosave();
+      notifyActiveFileChanged();
     });
 
     return {
