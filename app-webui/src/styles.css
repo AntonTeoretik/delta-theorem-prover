@@ -493,3 +493,43 @@ body {
     grid-template-rows: minmax(220px, 40%) 1fr;
   }
 }
+
+.header-button {
+  border: 1px solid var(--border);
+  background: rgba(24, 28, 33, 0.8);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.project-file-select {
+  background: rgba(24, 28, 33, 0.8);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.editor-autocomplete {
+  position: absolute;
+  left: 64px;
+  top: 36px;
+  z-index: 6;
+  min-width: 180px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(25, 29, 34, 0.95);
+  display: none;
+}
+
+.autocomplete-item {
+  padding: 6px 8px;
+  font: 13px/1.3 "Consolas", "JetBrains Mono", monospace;
+}
+
+.autocomplete-item.selected,
+.autocomplete-item:hover {
+  background: rgba(255, 155, 74, 0.24);
+}

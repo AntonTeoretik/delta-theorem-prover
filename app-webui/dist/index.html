@@ -13,6 +13,10 @@
       <div class="header-row">
         <p id="stats">Type in the editor to update visualization.</p>
         <div class="header-toggles">
+          <select id="projectFileSelect" class="project-file-select" aria-label="Current file"></select>
+          <button id="addProjectFileButton" class="header-button" type="button">+ File</button>
+          <button id="uploadFileButton" class="header-button" type="button">Upload</button>
+          <input id="uploadFileInput" type="file" hidden accept=".dlt,.dlproj,text/plain" />
           <label class="compact-toggle" for="compactToggle">
             <input id="compactToggle" type="checkbox" checked />
             <span>Compact view</span>
@@ -34,6 +38,7 @@
           <textarea id="editorInput" spellcheck="false"></textarea>
           <div id="editorStatusMarkers" aria-hidden="true"></div>
           <div id="editorCaretOverlay" aria-hidden="true"></div>
+          <div id="editorAutocomplete" class="editor-autocomplete" aria-hidden="true"></div>
         </div>
       </section>
       <section class="graph-column">
@@ -79,6 +84,7 @@
   <script src="./app/renderer.js"></script>
   <script src="./app/reportPanel.js"></script>
   <script src="./app/evaluationPanel.js"></script>
+  <script src="./app/projectManager.js"></script>
   <script src="./editor/state.js"></script>
   <script src="./editor/textUtils.js"></script>
   <script src="./editor/overlay.js"></script>

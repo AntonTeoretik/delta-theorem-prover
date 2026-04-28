@@ -5,6 +5,7 @@
   "description": "Minimal standalone web UI for embedded JCEF host",
   "scripts": {
     "clean": "node scripts/build.js --clean",
-    "build": "node scripts/build.js"
+    "build": "node scripts/build.js",
+    "test": "node --test test/*.test.mjs"
   }
 }
