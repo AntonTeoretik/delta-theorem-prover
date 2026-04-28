@@ -9,10 +9,21 @@
     return { activeFile: DEFAULT_FILE, files: [{ path: DEFAULT_FILE, content: '' }] };
   }
 
+
+  function normalizeText(value) {
+    if (typeof value !== 'string') {
+      return '';
+    }
+    if (value.trim() === 'undefined' || value.trim() === 'null') {
+      return '';
+    }
+    return value;
+  }
+
   function decodeProject(text) {
-    const normalized = (text || '').replace(/\r\n/g, '\n');
+    const normalized = normalizeText(text).replace(/\r\n/g, '\n');
     if (!normalized.startsWith(HEADER)) {
-      return { activeFile: DEFAULT_FILE, files: [{ path: DEFAULT_FILE, content: normalized }] };
+      return { activeFile: DEFAULT_FILE, files: [{ path: DEFAULT_FILE, content: normalizeText(normalized) }] };
     }
 
     const lines = normalized.split('\n');
@@ -22,7 +33,7 @@
 
     function flush() {
       if (!current) return;
-      files.push({ path: current, content: buffer.join('\n').replace(/\n+$/, '') });
+      files.push({ path: current, content: normalizeText(buffer.join('\n').replace(/\n+$/, '')) });
       buffer = [];
     }
 
@@ -74,12 +85,12 @@
 
     function syncEditorFromProject() {
       const file = getActiveFile();
-      editorInput.value = file?.content || '';
+      editorInput.value = normalizeText(file?.content);
     }
 
     function updateActiveFileContent(text) {
       const file = getActiveFile();
-      if (file) file.content = text;
+      if (file) file.content = normalizeText(text);
     }
 
     function loadFromSerialized(serialized) {
