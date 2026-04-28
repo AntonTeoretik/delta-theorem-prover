@@ -6,6 +6,7 @@
     const editorLayer = document.querySelector('.editor-layer');
     const editorCaretOverlay = document.getElementById('editorCaretOverlay');
     const editorStatusMarkers = document.getElementById('editorStatusMarkers');
+    const editorAutocomplete = document.getElementById('editorAutocomplete');
     const hoverTooltip = document.getElementById('hoverTooltip');
     const canvas = document.getElementById('vizCanvas');
     const stats = document.getElementById('stats');
@@ -17,6 +18,10 @@
     const definitionBar = document.getElementById('definitionBar');
     const evaluationWrap = document.getElementById('evaluationWrap');
     const evaluationOutput = document.getElementById('evaluationOutput');
+    const projectFileSelect = document.getElementById('projectFileSelect');
+    const addProjectFileButton = document.getElementById('addProjectFileButton');
+    const uploadFileButton = document.getElementById('uploadFileButton');
+    const uploadFileInput = document.getElementById('uploadFileInput');
     const ctx = canvas.getContext('2d');
 
     const bridgeApi = global.DeltaBridge;
@@ -33,6 +38,7 @@
     const graphInteractionsApi = global.DeltaGraphInteractions;
     const reportPanelApi = global.DeltaReportPanel;
     const evaluationPanelApi = global.DeltaEvaluationPanel;
+    const projectManagerApi = global.DeltaProjectManager;
 
     if (!bridgeApi
       || !definitionBarApi
@@ -47,14 +53,15 @@
       || !statusMarkersApi
       || !graphInteractionsApi
       || !reportPanelApi
-      || !evaluationPanelApi) {
+      || !evaluationPanelApi
+      || !projectManagerApi) {
       stats.textContent = 'UI initialization failed: script module missing';
       throw new Error('Delta web UI bootstrap failed: missing global module');
     }
 
     const {
       notifyHostDefinitionSelected,
-      notifyHostTextChanged,
+      notifyHostTextChanged: notifyHostWithProjectText,
       notifyHostEditorCaretMoved,
     } = bridgeApi;
     const { renderDefinitionBar } = definitionBarApi;
@@ -90,6 +97,7 @@
     const { attachGraphInteractions } = graphInteractionsApi;
     const { renderDiagnosticsReport } = reportPanelApi;
     const { renderEvaluationPanel } = evaluationPanelApi;
+    const { createProjectManager } = projectManagerApi;
 
     const elements = {
       editorInput,
@@ -98,14 +106,27 @@
       editorLayer,
       editorCaretOverlay,
       editorStatusMarkers,
+      editorAutocomplete,
       hoverTooltip,
       reportOutput,
       reportStatusBadge,
       evaluationWrap,
       evaluationOutput,
+      projectFileSelect,
+      addProjectFileButton,
+      uploadFileButton,
+      uploadFileInput,
     };
     const view = createViewState();
     const state = createAppState();
+    const projectManager = createProjectManager({
+      editorInput,
+      fileSelect: projectFileSelect,
+      addFileButton: addProjectFileButton,
+      uploadButton: uploadFileButton,
+      uploadInput: uploadFileInput,
+    });
+    projectManager.loadFromStorage();
     const renderer = createRenderer({
       canvas,
       ctx,
@@ -153,6 +174,12 @@
       });
     }
 
+    function notifyHostWithProjectText() {
+      projectManager.updateActiveFileContent(editorInput.value);
+      projectManager.autosave();
+      notifyHostTextChanged(projectManager.serialize());
+    }
+
     function notifyCaretMoved() {
       const caretOffset = editorInput.selectionStart || 0;
       if (caretOffset === state.lastSentCaretOffset) {
@@ -167,7 +194,7 @@
       editorInput.setSelectionRange(caretOffset, caretOffset);
       renderEditorWithCurrentHighlights();
       if (!state.suppressHostNotify) {
-        notifyHostTextChanged(editorInput.value);
+        notifyHostWithProjectText();
       }
       notifyCaretMoved();
     }
@@ -210,7 +237,7 @@
 
     global.setEditorTextFromHost = (text) => {
       state.suppressHostNotify = true;
-      editorInput.value = text || '';
+      projectManager.loadFromSerialized(text || '');
       resetSlashMode(state);
       renderEditorWithCurrentHighlights();
       syncEditorOverlayScroll();
@@ -229,7 +256,7 @@
       state,
       elements,
       renderEditorWithCurrentHighlights,
-      notifyHostTextChanged,
+      notifyHostTextChanged: notifyHostWithProjectText,
       notifyCaretMoved,
       applyEditorTextChange,
       resetSlashMode: () => resetSlashMode(state),
