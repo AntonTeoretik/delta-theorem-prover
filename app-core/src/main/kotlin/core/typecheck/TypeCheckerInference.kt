@@ -102,13 +102,24 @@ internal fun TypeChecker.inferApplicationType(term: Term.Application, locals: Ma
             report(spanOf(term.function), "expected explicit function type")
             return null
         }
+        val parameterType = whnf(zonk(functionType.parameterType))
 
-        if (!checkTermAgainst(term.argument, functionType.parameterType, locals)) {
-            report(
-                spanOf(term.argument),
-                "Application argument type mismatch. Expected ${pretty(functionType.parameterType)}, got ${pretty(inferType(term.argument, locals) ?: Term.Variable("_", TextSpan(0, 0)))}",
-            )
-            return null
+        val argumentAccepted = withSuppressedDiagnostics {
+            checkTermAgainst(term.argument, parameterType, locals)
+        }
+        if (!argumentAccepted) {
+            val inferredArgumentType = inferType(term.argument, locals) ?: return null
+            val refined =
+                refineMetasFromExpected(parameterType, inferredArgumentType, locals) ||
+                    refineMetasFromExpected(inferredArgumentType, parameterType, locals)
+            val convertibleNow = convertibleInContext(inferredArgumentType, parameterType, locals)
+            if (!refined && !convertibleNow && !containsUnresolvedMeta(parameterType)) {
+                report(
+                    spanOf(term.argument),
+                    "Application argument type mismatch. Expected ${pretty(parameterType)}, got ${pretty(inferredArgumentType)}",
+                )
+                return null
+            }
         }
         return substitute(functionType.body, functionType.parameter, term.argument)
     }
@@ -173,10 +184,82 @@ internal fun TypeChecker.checkTermAgainst(term: Term, expectedType: Term, locals
     val instantiatedInferred = instantiateLeadingImplicitPis(inferred, locals, spanOf(term))
     val inferredElaborated = elaborateImplicitApplications(zonk(instantiatedInferred), locals, requireMetaResolution = false)
     if (!convertible(inferredElaborated, expected)) {
+        val refined =
+            refineMetasFromExpected(inferredElaborated, expected, locals) ||
+                refineMetasFromExpected(expected, inferredElaborated, locals)
+        if (refined && convertible(inferredElaborated, expected)) {
+            return true
+        }
         report(spanOf(term), "Type mismatch. Expected ${pretty(expected)}, got ${pretty(inferred)}")
         return false
     }
     return true
+}
+
+internal fun TypeChecker.refineMetasFromExpected(inferred: Term, expected: Term, locals: Map<String, Term>): Boolean {
+    val left = zonk(inferred)
+    val right = zonk(expected)
+    var changed = false
+
+    if (left is Term.Meta && trySolveMeta(left, right)) {
+        changed = true
+    }
+    if (left is Term.Application && trySolveAppliedMetaFromExpected(left, right, locals)) {
+        changed = true
+    }
+
+    when {
+        left is Term.Typed && right is Term.Typed -> {
+            changed = refineMetasFromExpected(left.term, right.term, locals) || changed
+            changed = refineMetasFromExpected(left.type, right.type, locals) || changed
+        }
+
+        left is Term.Application && right is Term.Application && left.visibility == right.visibility -> {
+            changed = refineMetasFromExpected(left.function, right.function, locals) || changed
+            changed = refineMetasFromExpected(left.argument, right.argument, locals) || changed
+        }
+
+        left is Term.Pi && right is Term.Pi && left.visibility == right.visibility -> {
+            changed = refineMetasFromExpected(left.parameterType, right.parameterType, locals) || changed
+            val variable = Term.Variable(left.parameter, left.parameterSpan)
+            val rightBody = substitute(right.body, right.parameter, variable)
+            changed = refineMetasFromExpected(left.body, rightBody, locals + (left.parameter to left.parameterType)) || changed
+        }
+
+        left is Term.Lambda && right is Term.Lambda && left.visibility == right.visibility -> {
+            changed = refineMetasFromExpected(left.parameterType, right.parameterType, locals) || changed
+            val variable = Term.Variable(left.parameter, left.parameterSpan)
+            val rightBody = substitute(right.body, right.parameter, variable)
+            changed = refineMetasFromExpected(left.body, rightBody, locals + (left.parameter to left.parameterType)) || changed
+        }
+    }
+    return changed
+}
+
+internal fun TypeChecker.trySolveAppliedMetaFromExpected(
+    term: Term.Application,
+    expected: Term,
+    locals: Map<String, Term>,
+): Boolean {
+    val (head, args) = decomposeApplicationWithVisibility(term)
+    val meta = head as? Term.Meta ?: return false
+    if (args.isEmpty()) return false
+    val argVariables = args.map { it.term as? Term.Variable ?: return false }
+    if (argVariables.map { it.name }.toSet().size != argVariables.size) return false
+
+    var abstraction: Term = expected
+    for (index in argVariables.indices.reversed()) {
+        val variable = argVariables[index]
+        val parameterType = locals[variable.name] ?: typeUniverseTerm()
+        abstraction = Term.Lambda(
+            parameter = variable.name,
+            parameterType = parameterType,
+            body = abstraction,
+            parameterSpan = variable.span,
+            visibility = args[index].visibility,
+        )
+    }
+    return trySolveMeta(meta, abstraction)
 }
 
 internal fun TypeChecker.instantiateLeadingImplicitPis(type: Term, locals: Map<String, Term>, span: TextSpan?): Term {

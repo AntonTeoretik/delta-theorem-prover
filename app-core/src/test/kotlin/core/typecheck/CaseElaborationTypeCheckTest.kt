@@ -521,14 +521,14 @@ class CaseElaborationTypeCheckTest {
       theorem exists_or_left {A : Type}, {P : A → Type}, {Q : A → Type},
         p : ∃{A}(P) : ∃{A}(λ x => P(x) or Q(x)) :=
         case p of {
-          make(a, pa) => make(a, lhs(pa));
+          make(a, pa) => make{A}{λ x => P(x) or Q(x)}(a, lhs{P(a)}{Q(a)}(pa));
         };
 
       theorem exists_or_right {A : Type}, {P : A → Type}, {Q : A → Type},
         p : ∃{A}(Q)
         : ∃{A}(λ x => P(x) or Q(x)) :=
         case p of {
-          make(a, qa) => make(a, rhs(qa));
+          make(a, qa) => make{A}{λ x => P(x) or Q(x)}(a, rhs{P(a)}{Q(a)}(qa));
         };
 
       theorem exists_or_elim {A : Type}, {P : A → Type}, {Q : A → Type},
@@ -537,8 +537,8 @@ class CaseElaborationTypeCheckTest {
         case p of {
           make(a, pq) =>
             case pq of {
-              lhs(pa) => lhs(make(a, pa));
-              rhs(qa) => rhs(make(a, qa));
+              lhs(pa) => lhs{∃{A}(P)}{∃{A}(Q)}(make{A}{P}(a, pa));
+              rhs(qa) => rhs{∃{A}(P)}{∃{A}(Q)}(make{A}{Q}(a, qa));
             };
         };
 
@@ -562,7 +562,10 @@ class CaseElaborationTypeCheckTest {
         : (∃{B}(λ b => ∃{A}(λ a => P(a) and (f(a) = b))) ):=
         case p of {
           make(a, pa) =>
-            make(f(a), make(a, pa × refl(f(a))));
+            make{B}{λ b => ∃{A}(λ a => P(a) and (f(a) = b))}(
+              f(a),
+              make{A}{λ x => P(x) and (f(x) = f(a))}(a, pa × refl(f(a)))
+            );
         };
       
     """.trimIndent()
