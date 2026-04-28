@@ -278,4 +278,52 @@ class CaseElaborationTypeCheckTest {
         val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
         assertTrue(diagnostics.isEmpty(), "Expected no diagnostics, got: $diagnostics")
     }
+
+    @Test
+    fun supportsCaseOnOrReturnedFromAndRight() {
+        val source = """
+            inductive ∃ : {A : Type} → (B : A → Type) → Type {
+              make : {A : Type} → {B : A → Type} → (a : A) → (b : B(a)) → ∃{A}(B);
+            }
+
+            inductive True : Type {
+               obvious : True;
+            }
+
+            inductive or : (A: Type) → (B: Type) → Type {
+               lhs : {A : Type } → {B: Type} → A → or (A, B);
+               rhs : {A : Type } → {B: Type} → B → or (A, B);
+            }
+            infixl 6 or;
+
+            def and (A : Type), (B : Type) : Type := ∃{A}(λ(_ : A) => B);
+            infixl 7 and;
+
+            def × {A : Type}, {B : Type}, (a : A), (b : B) : (A and B) := make{A}{λ(_ : A) => B}(a, b);
+            infixl 7 ×;
+
+            def fst {A : Type}, {B : A → Type}, p : ∃(B) : A :=
+              case p of {
+                make(a, _) => a;
+              };
+
+            def snd {A : Type}, {B : A → Type}, p : ∃{A}(B) : B(fst(p)) :=
+              case p of {
+                make(a, b) => b;
+              };
+
+            def and_left {A : Type}, {B : Type}, p : (A and B) : A := fst(p);
+            def and_right {A : Type}, {B : Type}, p : (A and B) : B := snd(p);
+
+            theorem and_or_distrib_left {A : Type}, {B : Type}, {C : Type},
+              p : A and (B or C) : (A and B) or (A and C) :=
+              case and_right(p) of {
+                lhs(b) => lhs(and_left(p) × b);
+                rhs(c) => rhs(and_left(p) × c);
+              };
+        """.trimIndent()
+
+        val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
+        assertTrue(diagnostics.isEmpty(), "Expected no diagnostics, got: $diagnostics")
+    }
 }
