@@ -61,7 +61,7 @@
 
     const {
       notifyHostDefinitionSelected,
-      notifyHostTextChanged: notifyHostWithProjectText,
+      notifyHostTextChanged: bridgeNotifyHostTextChanged,
       notifyHostEditorCaretMoved,
     } = bridgeApi;
     const { renderDefinitionBar } = definitionBarApi;
@@ -177,7 +177,7 @@
     function notifyHostWithProjectText() {
       projectManager.updateActiveFileContent(editorInput.value);
       projectManager.autosave();
-      notifyHostTextChanged(projectManager.serialize());
+      bridgeNotifyHostTextChanged(projectManager.serialize());
     }
 
     function notifyCaretMoved() {
@@ -256,7 +256,7 @@
       state,
       elements,
       renderEditorWithCurrentHighlights,
-      notifyHostTextChanged: notifyHostWithProjectText,
+      notifyHostTextChanged: bridgeNotifyHostTextChanged,
       notifyCaretMoved,
       applyEditorTextChange,
       resetSlashMode: () => resetSlashMode(state),
