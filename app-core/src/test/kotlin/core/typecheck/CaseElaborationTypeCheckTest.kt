@@ -562,7 +562,7 @@ class CaseElaborationTypeCheckTest {
         : (∃{B}(λ b => ∃{A}(λ a => P(a) and (f(a) = b))) ):=
         case p of {
           make(a, pa) =>
-            make(f(a), make(a, pa(×, refl(f(a)))));
+            make(f(a), make(a, pa × refl(f(a))));
         };
       
     """.trimIndent()
@@ -570,4 +570,77 @@ class CaseElaborationTypeCheckTest {
     val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
     assertTrue(diagnostics.isEmpty(), "Expected no diagnostics, got: $diagnostics")
   }
+
+    @Test
+    fun supportsStandardCaseTheoremsSubset() {
+        val source = """
+            inductive ∃ : {A : Type} → (B : A → Type) → Type {
+              make : {A : Type} → {B : A → Type} → (a : A) → (b : B(a)) → ∃{A}(B);
+            }
+
+            inductive or : (A: Type) → (B: Type) → Type {
+               lhs : {A : Type } → {B: Type} → A → or (A, B);
+               rhs : {A : Type } → {B: Type} → B → or (A, B);
+            }
+            infixl 6 or;
+
+            def and (A : Type), (B : Type) : Type := ∃{A}(λ(_ : A) => B);
+            infixl 7 and;
+
+            def × {A : Type}, {B : Type}, (a : A), (b : B) : (A and B) := make{A}{λ(_ : A) => B}(a, b);
+            infixl 7 ×;
+
+            def fst {A : Type}, {B : A → Type}, p : ∃(B) : A :=
+              case p of {
+                make(a, _) => a;
+              };
+
+            def snd {A : Type}, {B : A → Type}, p : ∃{A}(B) : B(fst(p)) :=
+              case p of {
+                make(a, b) => b;
+              };
+
+            def and_left {A : Type}, {B : Type}, p : (A and B) : A := fst(p);
+            def and_right {A : Type}, {B : Type}, p : (A and B) : B := snd(p);
+
+            theorem and_or_distrib_left {A : Type}, {B : Type}, {C : Type},
+              p : A and (B or C) : (A and B) or (A and C) :=
+              case and_right(p) of {
+                lhs(b) => lhs(and_left(p) × b);
+                rhs(c) => rhs(and_left(p) × c);
+              };
+
+            theorem exists_elim {A : Type}, {B : A → Type}, {C : Type}, p : ∃{A}(B), (f : ∀(a : A), (b : B(a)) => C) : C :=
+              case p of {
+                make(a, b) => f(a, b);
+              };
+        """.trimIndent()
+
+        val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
+        assertTrue(diagnostics.isEmpty(), "Expected no diagnostics, got: $diagnostics")
+    }
+
+    @Test
+    fun rejectsIncorrectStandardCaseTheoremBranchType() {
+        val source = """
+            inductive ∃ : {A : Type} → (B : A → Type) → Type {
+              make : {A : Type} → {B : A → Type} → (a : A) → (b : B(a)) → ∃{A}(B);
+            }
+
+            inductive True : Type {
+              obvious : True;
+            }
+
+            theorem bad_exists_elim {A : Type}, {B : A → Type}, p : ∃{A}(B) : True :=
+              case p of {
+                make(a, b) => a;
+              };
+        """.trimIndent()
+
+        val diagnostics = TypeChecker(SimpleTextParser().parse(source)).checkProgram().diagnostics
+        assertTrue(
+            diagnostics.any { it.message.contains("Type mismatch") },
+            "Expected type mismatch diagnostic, got: $diagnostics",
+        )
+    }
 }
