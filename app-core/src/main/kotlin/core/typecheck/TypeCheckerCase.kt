@@ -75,17 +75,18 @@ internal fun TypeChecker.elaborateCaseTerm(term: Term.Case, expectedType: Term, 
         return null
     }
 
-    val motiveParameter = "_caseTarget"
+    val motiveParameter = freshName("_caseTarget", expectedType, term.scrutinee)
+    val motiveVariable = Term.Variable(motiveParameter, term.span)
     val motiveBody = when (val scrutinee = term.scrutinee) {
         is Term.Variable -> {
             if (scrutinee.name in locals) {
-                substitute(expectedType, scrutinee.name, Term.Variable(motiveParameter, term.span))
+                substitute(expectedType, scrutinee.name, motiveVariable)
             } else {
-                expectedType
+                replaceSubterm(expectedType, scrutinee, motiveVariable)
             }
         }
 
-        else -> expectedType
+        else -> replaceSubterm(expectedType, scrutinee, motiveVariable)
     }
     val motive = Term.Lambda(
         parameter = motiveParameter,
@@ -272,11 +273,121 @@ internal fun TypeChecker.reduceCaseRedexes(term: Term): Term {
 }
 
 internal fun TypeChecker.applySubstitutions(type: Term, substitutions: Map<String, Term>): Term {
+    if (substitutions.isEmpty()) {
+        return type
+    }
+
+    val tempNames = linkedMapOf<String, String>()
+    val usedNames = substitutions.keys.toMutableSet()
+    usedNames += freeVariables(type)
+    substitutions.values.forEach { usedNames += freeVariables(it) }
+
+    substitutions.keys.forEach { name ->
+        var candidate = "_case_subst_$name"
+        var index = 0
+        while (candidate in usedNames || candidate in globals) {
+            candidate = "_case_subst_${name}_${index++}"
+        }
+        usedNames += candidate
+        tempNames[name] = candidate
+    }
+
     var result = type
-    substitutions.forEach { (name, value) ->
-        result = substitute(result, name, value)
+    tempNames.forEach { (name, tempName) ->
+        result = substitute(result, name, Term.Variable(tempName, spanOf(type) ?: TextSpan(0, 0)))
+    }
+    tempNames.forEach { (name, tempName) ->
+        result = substitute(result, tempName, substitutions.getValue(name))
     }
     return result
+}
+
+internal fun TypeChecker.replaceSubterm(term: Term, target: Term, replacement: Term): Term {
+    if (alphaEquivalent(term, target)) {
+        return replacement
+    }
+    return when (term) {
+        is Term.Meta,
+        is Term.Variable,
+        is Term.Constant,
+        -> term
+
+        is Term.Typed -> Term.Typed(
+            term = replaceSubterm(term.term, target, replacement),
+            type = replaceSubterm(term.type, target, replacement),
+        )
+
+        is Term.Application -> Term.Application(
+            function = replaceSubterm(term.function, target, replacement),
+            argument = replaceSubterm(term.argument, target, replacement),
+            visibility = term.visibility,
+        )
+
+        is Term.Lambda -> {
+            val newParameterType = replaceSubterm(term.parameterType, target, replacement)
+            val replacementVars = freeVariables(replacement)
+            if (term.parameter in replacementVars) {
+                val fresh = freshName(term.parameter, term.body, replacement, target)
+                val renamedBody = substitute(term.body, term.parameter, Term.Variable(fresh, term.parameterSpan))
+                Term.Lambda(
+                    parameter = fresh,
+                    parameterType = newParameterType,
+                    body = replaceSubterm(renamedBody, target, replacement),
+                    parameterSpan = term.parameterSpan,
+                    visibility = term.visibility,
+                )
+            } else {
+                term.copy(
+                    parameterType = newParameterType,
+                    body = replaceSubterm(term.body, target, replacement),
+                )
+            }
+        }
+
+        is Term.Pi -> {
+            val newParameterType = replaceSubterm(term.parameterType, target, replacement)
+            val replacementVars = freeVariables(replacement)
+            if (term.parameter in replacementVars) {
+                val fresh = freshName(term.parameter, term.body, replacement, target)
+                val renamedBody = substitute(term.body, term.parameter, Term.Variable(fresh, term.parameterSpan))
+                Term.Pi(
+                    parameter = fresh,
+                    parameterType = newParameterType,
+                    body = replaceSubterm(renamedBody, target, replacement),
+                    parameterSpan = term.parameterSpan,
+                    visibility = term.visibility,
+                )
+            } else {
+                term.copy(
+                    parameterType = newParameterType,
+                    body = replaceSubterm(term.body, target, replacement),
+                )
+            }
+        }
+
+        is Term.Case -> {
+            val newScrutinee = replaceSubterm(term.scrutinee, target, replacement)
+            val replacementVars = freeVariables(replacement)
+            val newBranches = term.branches.map { branch ->
+                var nextBody = branch.body
+                val renames = linkedMapOf<String, String>()
+                branch.parameters.forEach { parameter ->
+                    val boundName = parameter.name
+                    if (boundName in replacementVars) {
+                        val fresh = freshName(boundName, nextBody, replacement, target)
+                        renames[boundName] = fresh
+                        nextBody = substitute(nextBody, boundName, Term.Variable(fresh, parameter.span))
+                    }
+                }
+                val updatedParameters = branch.parameters.map { parameter ->
+                    val fresh = renames[parameter.name]
+                    if (fresh == null) parameter else parameter.copy(name = fresh)
+                }
+                branch.copy(parameters = updatedParameters, body = replaceSubterm(nextBody, target, replacement))
+            }
+            term.copy(scrutinee = newScrutinee, branches = newBranches)
+        }
+    }
 }
 
 internal fun TypeChecker.matchesTypeApplication(
@@ -297,7 +408,7 @@ internal fun TypeChecker.matchesTypeApplication(
         return false
     }
     return args.zip(expectedArgs).all { (actual, expected) ->
-        actual.visibility == expected.visibility && convertibleInContext(actual.term, expected.term, locals)
+        convertibleInContext(actual.term, expected.term, locals)
     }
 }
 
