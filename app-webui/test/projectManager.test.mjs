@@ -69,3 +69,41 @@ test('manager serializes active file changes', () => {
   const serialized = manager.serialize();
   assert.match(serialized, /def x : Type;/);
 });
+
+
+test('file switch preserves per-file text', () => {
+  class SelectElement extends FakeElement {
+    constructor() { super(); this.options = []; }
+    appendChild(opt) { this.options.push(opt); }
+  }
+
+  const windowObj = {
+    prompt: () => 'util.dlt',
+    localStorage: { getItem: () => null, setItem: () => {} },
+    document: { createElement: () => new FakeElement() },
+  };
+  loadProjectManager(windowObj);
+
+  const editorInput = new FakeElement();
+  const fileSelect = new SelectElement();
+  const addFileButton = new FakeElement();
+  const uploadButton = new FakeElement();
+  const uploadInput = new FakeElement();
+
+  const manager = windowObj.DeltaProjectManager.createProjectManager({
+    editorInput,
+    fileSelect,
+    addFileButton,
+    uploadButton,
+    uploadInput,
+  });
+
+  manager.loadFromSerialized(`--!delta-project v1\n--!file main.dlt\nmain text\n`);
+  addFileButton.dispatch('click');
+  editorInput.value = 'util text';
+  manager.updateActiveFileContent(editorInput.value);
+
+  fileSelect.value = 'main.dlt';
+  fileSelect.dispatch('change');
+  assert.equal(editorInput.value, 'main text');
+});

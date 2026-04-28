@@ -61,7 +61,7 @@
 
     const {
       notifyHostDefinitionSelected,
-      notifyHostTextChanged: notifyHostWithProjectText,
+      notifyHostTextChanged: bridgeNotifyHostTextChanged,
       notifyHostEditorCaretMoved,
     } = bridgeApi;
     const { renderDefinitionBar } = definitionBarApi;
