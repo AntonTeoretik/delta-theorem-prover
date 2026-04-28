@@ -142,6 +142,7 @@ internal fun TypeChecker.elaborateCaseTerm(term: Term.Case, expectedType: Term, 
         branchContextSubstitution.putAll(parameterSubstitution)
         val branchLocals = locals.toMutableMap()
         val branchArgVars = mutableListOf<Term.Variable>()
+        val branchArgTypes = mutableListOf<Term>()
 
         constructorDataArgs.forEachIndexed { index, dataArg ->
             val parameter = branch.parameters[index]
@@ -155,6 +156,7 @@ internal fun TypeChecker.elaborateCaseTerm(term: Term.Case, expectedType: Term, 
 
             val argType = applySubstitutions(dataArg.type, branchContextSubstitution)
             branchLocals[name] = argType
+            branchArgTypes += argType
             val variable = Term.Variable(name, parameter.span)
             branchArgVars += variable
             branchContextSubstitution[dataArg.name] = variable
@@ -187,11 +189,10 @@ internal fun TypeChecker.elaborateCaseTerm(term: Term.Case, expectedType: Term, 
 
         var caseBody: Term = branch.body
         for (index in constructorDataArgs.indices.reversed()) {
-            val dataArg = constructorDataArgs[index]
             val variable = branchArgVars[index]
-            val argType = applySubstitutions(dataArg.type, branchContextSubstitution)
+            val argType = branchArgTypes[index]
 
-            if (matchesTypeApplication(argType, typeName, scrutineeArgs, emptyMap(), locals)) {
+            if (matchesTypeApplication(argType, typeName, scrutineeArgs, emptyMap(), branchLocals)) {
                 val ihType = Term.Application(motive, variable, Term.Visibility.EXPLICIT)
                 caseBody = Term.Lambda(
                     parameter = "_ih$index",
